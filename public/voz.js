@@ -5,25 +5,80 @@
 // permite ligar e desligar o compartilhamento de tela no meio da chamada. Em colisão, o lado "educado"
 // (maior id) cede.
 
+import { TENTA_OUTRO, outrasEntradas, assinaturaPadrao, deveReabrir, alvoSaida, nomeDispositivo, nivelDe } from './dispositivos.js';
+
 const VOP = { IDENTIFY: 0, SELECT_PROTOCOL: 1, READY: 2, HEARTBEAT: 3, SESSION_DESCRIPTION: 4, SPEAKING: 5,
-  HEARTBEAT_ACK: 6, HELLO: 8, CLIENTS_CONNECT: 11, VIDEO: 12, CLIENT_DISCONNECT: 13, PEER_SIGNAL: 100 };
+  HEARTBEAT_ACK: 6, HELLO: 8, CLIENTS_CONNECT: 11, VIDEO: 12, CLIENT_DISCONNECT: 13, PEER_SIGNAL: 100,
+  STREAM_WATCH: 101 };
 const LIMIAR_FALA = 0.02, SEGURA_FALA_MS = 300;
 
 // Preferências de áudio deste computador (não vão para o servidor)
 const CHAVE_PREFS = 'limb.audio';
-const PREFS_PADRAO = { volumeGeral: 1, volumes: {}, entrada: '', saida: '', ruido: true, eco: true };
+// entradaNome/saidaNome só existem depois de escolher um aparelho; tela (última escolha do Go Live) passa por normalizarTela
+const PREFS_PADRAO = { volumeGeral: 1, volumes: {}, entrada: '', saida: '', ruido: true, eco: true, vozKbps: 64 };
 function lerPrefs() {
   try { return { ...PREFS_PADRAO, ...JSON.parse(localStorage.getItem(CHAVE_PREFS) ?? '{}') }; } catch { return { ...PREFS_PADRAO }; }
 }
 
-// Qualidades do "Go Live". Malha P2P: quem transmite envia uma cópia para cada pessoa na sala.
-export const QUALIDADES = {
-  '720p30': { altura: 720, fps: 30, bitrate: 2_500_000, nome: '720p · 30 fps' },
-  '1080p30': { altura: 1080, fps: 30, bitrate: 4_500_000, nome: '1080p · 30 fps' },
-  '1080p60': { altura: 1080, fps: 60, bitrate: 7_000_000, nome: '1080p · 60 fps' },
+// Qualidades do "Go Live": resolução × quadros, como no Discord. Malha P2P: quem transmite envia uma
+// cópia para cada pessoa que está assistindo, então o upload é bitrate × quem assiste.
+export const RESOLUCOES = ['480', '720', '1080', '1440', 'original'];
+export const TAXAS = [15, 30, 60];
+const BITRATE_TELA = { // bits/s a 15 / 30 / 60 fps
+  480: [800_000, 1_200_000, 2_000_000],
+  720: [1_500_000, 2_500_000, 4_000_000],
+  1080: [2_700_000, 4_500_000, 7_000_000],
+  1440: [4_800_000, 8_000_000, 12_000_000],
 };
+// Original: escala o 1080p30 pelos pixels e quadros de verdade (crescimento menor que linear, como a tabela)
+const bitrateOriginal = (w, h, fps) => Math.round(Math.min(16_000_000, Math.max(800_000,
+  4_500_000 * ((w * h) / (1920 * 1080)) ** 0.85 * (fps / 30) ** 0.75)));
+const TELA_PADRAO = { resolucao: '1080', fps: 30, otimizar: 'nitidez', codec: '' };
+export function normalizarTela(t = {}) {
+  return {
+    resolucao: RESOLUCOES.includes(String(t.resolucao)) ? String(t.resolucao) : TELA_PADRAO.resolucao,
+    fps: TAXAS.includes(Number(t.fps)) ? Number(t.fps) : TELA_PADRAO.fps,
+    otimizar: t.otimizar === 'movimento' ? 'movimento' : 'nitidez',
+    codec: codecsDeVideo().includes(t.codec) ? t.codec : '',
+  };
+}
+// Upload por pessoa assistindo; no "Original" a tela ainda não foi escolhida: usa o tamanho deste monitor
+export function estimativaTela(t) {
+  const { resolucao, fps } = normalizarTela(t);
+  if (resolucao !== 'original') return BITRATE_TELA[resolucao][TAXAS.indexOf(fps)];
+  const dpr = globalThis.devicePixelRatio || 1;
+  return bitrateOriginal((globalThis.screen?.width || 1920) * dpr, (globalThis.screen?.height || 1080) * dpr, fps);
+}
+// Codecs que este navegador codifica e deixa escolher (setCodecPreferences); vazio = só "Automático"
+const CODECS = ['H264', 'VP9', 'AV1'];
+export function codecsDeVideo() {
+  try {
+    if (!('setCodecPreferences' in RTCRtpTransceiver.prototype)) return [];
+    const caps = RTCRtpSender.getCapabilities('video')?.codecs ?? [];
+    return CODECS.filter((c) => caps.some((x) => x.mimeType.toLowerCase() === `video/${c.toLowerCase()}`));
+  } catch { return []; }
+}
+// Primeiro o codec escolhido, depois o resto (rtx/red/ulpfec inclusos) como reserva se o outro lado não tiver.
+// A especificação antiga valida pela lista de recepção, a nova pela de envio: tenta as duas; falhou, fica no automático.
+function preferirCodec(transceptor, codec) {
+  if (!codec || !transceptor.setCodecPreferences) return;
+  const mime = `video/${codec}`.toLowerCase();
+  for (const lado of [globalThis.RTCRtpReceiver, globalThis.RTCRtpSender]) {
+    try {
+      const todos = lado?.getCapabilities('video')?.codecs ?? [];
+      const escolhido = todos.filter((c) => c.mimeType.toLowerCase() === mime);
+      if (!escolhido.length) continue;
+      transceptor.setCodecPreferences([...escolhido, ...todos.filter((c) => c.mimeType.toLowerCase() !== mime)]);
+      return;
+    } catch {}
+  }
+}
 
-export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
+// Voz: o libwebrtc usa o maxBitrate do RTP como alvo do Opus (sem ele, 32 kbps). Padrão do Discord: 64.
+const KBPS_VOZ = [32, 64, 96, 128];
+
+// tocar(nome): sons da chamada (sons.js); opcional, para este módulo não depender deles
+export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId, tocar = () => {} }) {
   // setLocalMute do discord_voice.node: silenciar alguém só para mim; vale entre conexões
   const mutadosLocal = new Set();
   let v = null; // conexão atual
@@ -54,15 +109,34 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
     NotAllowedError: 'O Windows bloqueou o microfone (Configurações → Privacidade → Microfone).',
     NotReadableError: 'O microfone está em uso por outro programa.',
   };
+  // Tenta o escolhido, depois o padrão do sistema, depois cada um dos outros (ex.: o do notebook quando
+  // o fone está ocupado). reserva = abriu outro que não o escolhido.
   async function abrirMicrofone() {
-    try { return { stream: await navigator.mediaDevices.getUserMedia({ audio: restricoes() }) }; }
-    catch (e) { return { stream: new MediaStream(), semMic: MOTIVO_SEM_MIC[e.name] ?? `Microfone indisponível (${e.message}).` }; }
+    const md = navigator.mediaDevices;
+    if (!md?.getUserMedia) return { stream: new MediaStream(), semMic: 'O navegador só libera o microfone em https ou no app desktop.' };
+    let erro = null;
+    const abrir = (deviceId) => md.getUserMedia({ audio: { ...restricoes(), deviceId } }).catch((e) => { erro = e; return null; });
+    let stream = await abrir(prefs.entrada ? { ideal: prefs.entrada } : undefined), reserva = false;
+    if (!stream && prefs.entrada && TENTA_OUTRO.has(erro.name)) reserva = !!(stream = await abrir(undefined));
+    if (!stream && TENTA_OUTRO.has(erro.name)) {
+      for (const id of outrasEntradas(await listarDispositivos(), [prefs.entrada])) {
+        if ((stream = await abrir({ exact: id })) || !TENTA_OUTRO.has(erro.name)) break;
+      }
+      reserva = !!stream;
+    }
+    if (!stream) return { stream: new MediaStream(), semMic: MOTIVO_SEM_MIC[erro.name] ?? `Microfone indisponível (${erro.message}).`, erro: erro.name };
+    // com "ideal", o Chromium cai sozinho em outro quando o escolhido não está conectado
+    if (prefs.entrada && stream.getAudioTracks()[0]?.getSettings().deviceId !== prefs.entrada) reserva = true;
+    return { stream, reserva };
   }
+  const listarDispositivos = async () => (await navigator.mediaDevices?.enumerateDevices?.().catch(() => null)) ?? [];
 
   async function entrarAgora(canal) {
-    const { stream, semMic } = await abrirMicrofone();
+    const { stream, semMic, reserva } = await abrirMicrofone();
     if (entrando?.canalId !== canal.id) { stream.getTracks().forEach((t) => t.stop()); return; } // trocou de canal no meio
-    if (v) sair();
+    // trocar de canal: o op 4 do canal novo já move no servidor (um op 4 null antes derrubaria a conexão nova)
+    if (v) { const a = v; v = null; limpar(a); }
+    avisoQueda = null; clearTimeout(timerQueda);
     v = { channelId: canal.id, guildId: canal.guild_id, stream, ws: null, ssrc: 0, status: 'conectando…', ice: [],
       mute: !!semMic, deaf: false, semMic, pares: new Map(), audios: new Map(),
       saida: criarSaida(), // áudio dos outros: cada pessoa → ganho próprio → volume geral → alto-falante
@@ -70,8 +144,14 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
       tela: null, // minha transmissão: { stream, qualidade }
       telasIds: new Map(), // userId → id do stream de tela que essa pessoa anunciou (op 12)
       telas: new Map(), // userId → MediaStream da tela recebida
+      espectadores: new Set(), // quem assiste a minha tela (op 101): só essas conexões recebem o vídeo
+      espectadoresDe: new Map(), // userId → ids de quem assiste a tela dessa pessoa ("N assistindo")
+      assistindoEnviado: null, // último op 101 que mandei: de quem o servidor acha que eu assisto a tela
       timers: [] };
     detectarFala();
+    vigiarFaixa(stream.getAudioTracks()[0]);
+    if (reserva) avisoDispositivo(`O microfone escolhido não abriu. Usando: ${micEmUso()}`);
+    lembrarPadrao();
     enviarGateway({ op: 4, d: estado() });
     avisar();
   }
@@ -84,6 +164,17 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
     enviarGateway({ op: 4, d: { guild_id: antigo.guildId, channel_id: null } });
     limpar(antigo);
   }
+  // Saída por ação minha (botão, sair da conta). Trocar de canal não passa aqui, sem som: só o
+  // 'entrar' do canal novo toca, senão os dois se atropelariam
+  function sairComSom() { const estava = !!v; sair(); if (estava) tocar('sair'); }
+
+  // A chamada caiu sozinha: linha no #vozAviso em vez de alert() (que travaria a página e o som 'desconectado')
+  let avisoQueda = null, timerQueda = 0;
+  function avisarQueda(texto) {
+    avisoQueda = texto; clearTimeout(timerQueda);
+    timerQueda = setTimeout(() => { avisoQueda = null; avisar(); }, 8000);
+    avisar();
+  }
 
   function limpar(c) {
     c.timers.forEach(clearInterval);
@@ -91,7 +182,7 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
     c.pares.forEach((p) => p.pc.close());
     c.audios.forEach((a) => { a.srcObject = null; });
     c.saida.ctx.close().catch(() => {});
-    c.stream.getTracks().forEach((t) => t.stop());
+    c.stream.getTracks().forEach(soltarFaixa);
     c.tela?.stream.getTracks().forEach((t) => t.stop());
     c.escuta?.stop();
     c.ctx?.close();
@@ -103,10 +194,18 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
   // Ensurdecer também silencia o microfone; desmutar estando surdo desfaz os dois (igual ao Discord)
   function alternarMudo() {
     if (!v) return;
-    if (v.semMic) return reabrirMicrofone(); // conectou um microfone depois: tenta de novo
+    if (v.semMic) { // conectou um microfone depois: tenta de novo
+      const c = v;
+      return reabrirMicrofone().then(() => { if (v === c && !v.semMic) tocar('desmudo'); });
+    }
+    tocar(v.deaf ? 'dessurdo' : v.mute ? 'desmudo' : 'mudo');
     aplicar(v.deaf ? { mute: false, deaf: false } : { mute: !v.mute });
   }
-  function alternarSurdo() { if (v) aplicar(v.deaf ? { mute: false, deaf: false } : { mute: true, deaf: true }); }
+  function alternarSurdo() {
+    if (!v) return;
+    tocar(v.deaf ? 'dessurdo' : 'surdo');
+    aplicar(v.deaf ? { mute: false, deaf: false } : { mute: true, deaf: true });
+  }
   function aplicar(patch) {
     Object.assign(v, patch);
     v.stream.getAudioTracks().forEach((t) => { t.enabled = !v.mute; });
@@ -141,7 +240,7 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
     ws.onclose = (e) => {
       if (v?.ws !== ws) return;
       // 4014 = o servidor tirou do canal (outra aba entrou, ou saiu por lá); demais: falha
-      if (e.code !== 4014) alert('Conexão de voz caiu');
+      if (e.code !== 4014) { tocar('desconectado'); avisarQueda('Conexão de voz caiu.'); }
       const antigo = v; v = null; limpar(antigo);
       if (e.code !== 4014) enviarGateway({ op: 4, d: { guild_id: antigo.guildId, channel_id: null } });
     };
@@ -157,20 +256,40 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
       case VOP.READY:
         v.ssrc = d.ssrc;
         v.ice = Array.isArray(d.ice_servers) ? d.ice_servers : [];
+        v.assistindoEnviado = null; // sessão de voz nova: o servidor não sabe de nada ainda
         enviar(VOP.SELECT_PROTOCOL, { protocol: 'webrtc-p2p', data: null });
+        sincronizarAssistir();
         break;
-      case VOP.SESSION_DESCRIPTION: v.status = 'conectado'; avisar(); break;
-      case VOP.CLIENTS_CONNECT: for (const id of d.user_ids) if (id !== store.me.id) par(id); break;
+      case VOP.SESSION_DESCRIPTION:
+        if (v.status !== 'conectado') tocar('entrar');
+        v.status = 'conectado'; avisar(); break;
+      case VOP.CLIENTS_CONNECT: for (const id of d.user_ids) if (id !== store.me.id) par(id); sincronizarAssistir(); break;
       case VOP.CLIENT_DISCONNECT: fecharPar(d.user_id); break;
       case VOP.SPEAKING:
         d.speaking & 1 ? store.speaking.add(d.user_id) : store.speaking.delete(d.user_id);
         avisar();
         break;
       case VOP.VIDEO: // chega antes das faixas da tela (mesmo WebSocket, em ordem)
-        if (d.stream_id) v.telasIds.set(d.user_id, d.stream_id);
-        else { v.telasIds.delete(d.user_id); v.telas.delete(d.user_id); if (store.assistindo === d.user_id) store.assistindo = null; }
+        if (d.stream_id) {
+          if (v.telasIds.get(d.user_id) !== d.stream_id) v.telas.delete(d.user_id); // trocou a qualidade: faixas novas a caminho
+          v.telasIds.set(d.user_id, d.stream_id);
+          if (Array.isArray(d.viewer_ids)) v.espectadoresDe.set(d.user_id, d.viewer_ids);
+        } else {
+          v.telasIds.delete(d.user_id); v.telas.delete(d.user_id); v.espectadoresDe.delete(d.user_id);
+          if (store.assistindo === d.user_id) store.assistindo = null;
+          if (v.assistindoEnviado === d.user_id) { v.assistindoEnviado = null; medirTaxa(null); } // o servidor já zerou
+        }
+        sincronizarAssistir(); // pediu para assistir antes de saber do stream: manda agora
         avisar();
         break;
+      case VOP.STREAM_WATCH: { // alguém começou/parou de assistir a minha tela
+        const p = v.pares.get(d.user_id);
+        // sem tela, é um pedido que cruzou com o meu "parar" (op 12 null): o servidor já zerou a lista
+        if (d.watching) { if (!v.tela) break; v.espectadores.add(d.user_id); if (p && !p.telaSenders.length) enviarTelaPara(p); }
+        else { v.espectadores.delete(d.user_id); if (p) tirarTelaDe(p); }
+        avisar();
+        break;
+      }
       case VOP.PEER_SIGNAL: await sinal(d); break;
     }
   }
@@ -183,7 +302,10 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
     v.pares.set(id, p);
     if (v.stream.getAudioTracks().length) v.stream.getTracks().forEach((t) => pc.addTrack(t, v.stream));
     else pc.addTransceiver('audio', { direction: 'sendrecv', streams: [v.stream] });
-    if (v.tela) enviarTelaPara(p);
+    if (v.tela && v.espectadores.has(id)) enviarTelaPara(p); // a tela só vai para quem assiste
+    aplicarParametros(p);
+    // antes da primeira negociação o envio pode não ter encodings: aplica de novo a cada uma que termina
+    pc.addEventListener('signalingstatechange', () => { if (pc.signalingState === 'stable') aplicarParametros(p); });
 
     pc.onnegotiationneeded = async () => {
       try {
@@ -244,6 +366,9 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
     v?.ganhos.delete(id);
     v?.telas.delete(id);
     v?.telasIds.delete(id);
+    v?.espectadores.delete(id);
+    v?.espectadoresDe.delete(id);
+    if (v?.assistindoEnviado === id) { v.assistindoEnviado = null; medirTaxa(null); }
     if (store.assistindo === id) store.assistindo = null;
     store.speaking.delete(id);
     avisar();
@@ -251,41 +376,127 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
 
   // ── Compartilhar tela ─────────────────────────────────────────────────────
   // fonte: no app desktop, o id escolhido no seletor próprio; no navegador, o seletor nativo do Chrome.
-  async function compartilharTela({ qualidade = '1080p30', comAudio = false } = {}) {
+  // escolha: { resolucao, fps, otimizar, codec } (ver normalizarTela); fica guardada para a próxima vez.
+  async function compartilharTela({ comAudio = false, ...escolha } = {}) {
     if (!v) return;
-    const q = QUALIDADES[qualidade] ?? QUALIDADES['1080p30'];
-    const stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { height: { ideal: q.altura }, frameRate: { ideal: q.fps } },
-      audio: comAudio,
-    });
-    if (!v) { stream.getTracks().forEach((t) => t.stop()); return; } // saiu da voz enquanto escolhia
+    const cfg = normalizarTela(escolha);
+    prefs.tela = cfg; salvarPrefs();
+    const altura = cfg.resolucao === 'original' ? null : Number(cfg.resolucao);
+    // max: não amplia uma tela menor que a resolução escolhida, nem passa dos quadros escolhidos
+    const restr = { frameRate: { ideal: cfg.fps, max: cfg.fps }, ...(altura && { height: { ideal: altura, max: altura } }) };
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: restr, audio: comAudio });
+    const conexao = v;
+    const descartar = () => stream.getTracks().forEach((t) => t.stop());
+    if (!conexao) return descartar(); // saiu da voz enquanto escolhia
     const [video] = stream.getVideoTracks();
-    video.contentHint = q.fps >= 60 ? 'motion' : 'detail'; // jogo: fluidez; texto/código: nitidez
-    await video.applyConstraints({ height: { ideal: q.altura }, frameRate: { ideal: q.fps } }).catch(() => {});
+    // Nitidez (texto/código): mantém a resolução e cai o fps; Movimento (jogo/vídeo): o contrário
+    video.contentHint = cfg.otimizar === 'movimento' ? 'motion' : 'detail';
+    await video.applyConstraints(restr).catch(() => {});
+    if (v !== conexao || video.readyState === 'ended') return descartar();
+    const s = video.getSettings();
+    const bitrate = altura ? BITRATE_TELA[altura][TAXAS.indexOf(cfg.fps)]
+      : bitrateOriginal(s.width || 1920, s.height || 1080, Math.min(cfg.fps, s.frameRate || cfg.fps));
     video.onended = pararTela; // "Parar de compartilhar" do sistema
-    if (v.tela) pararTela();
-    v.tela = { stream, qualidade: q };
+    // Trocou a qualidade no meio: quem assiste continua assistindo (o servidor mantém a lista), só as faixas mudam
+    if (v.tela) {
+      v.tela.stream.getTracks().forEach((t) => { t.onended = null; t.stop(); });
+      for (const p of v.pares.values()) tirarTelaDe(p);
+    }
+    v.tela = { stream, qualidade: { ...cfg, altura, bitrate, nome: `${altura ? `${altura}p` : 'Original'} · ${cfg.fps} fps` } };
     enviar(VOP.VIDEO, { stream_id: stream.id }); // antes das faixas: quem recebe já sabe que é tela
-    for (const p of v.pares.values()) enviarTelaPara(p);
+    for (const id of v.espectadores) { const p = v.pares.get(id); if (p) enviarTelaPara(p); }
     enviarGateway({ op: 4, d: estado() });
     avisar();
   }
 
   function enviarTelaPara(p) {
-    const { stream, qualidade } = v.tela;
-    p.telaSenders = stream.getTracks().map((t) => p.pc.addTransceiver(t, {
-      direction: 'sendonly', streams: [stream],
-      sendEncodings: t.kind === 'video' ? [{ maxBitrate: qualidade.bitrate, maxFramerate: qualidade.fps }] : undefined,
-    }).sender);
+    const { stream, qualidade: q } = v.tela;
+    p.telaSenders = stream.getTracks().map((t) => {
+      const tr = p.pc.addTransceiver(t, {
+        direction: 'sendonly', streams: [stream],
+        sendEncodings: t.kind === 'video' ? [{ maxBitrate: q.bitrate, maxFramerate: q.fps }] : undefined,
+      });
+      if (t.kind === 'video') preferirCodec(tr, q.codec); // antes da oferta: o negotiationneeded vem depois
+      return tr.sender;
+    });
+    aplicarParametros(p);
+  }
+  // stop(), não removeTrack: a linha vira rejeitada (porta 0) e o Chromium a reaproveita no próximo
+  // addTransceiver. Com removeTrack, cada assistir/parar somaria uma linha inteira no SDP até passar do
+  // limite do gateway de voz (64 KB) e derrubar a chamada.
+  function tirarTelaDe(p) {
+    if (p.pc.signalingState !== 'closed') {
+      for (const tr of p.pc.getTransceivers()) if (p.telaSenders.includes(tr.sender)) try { tr.stop(); } catch {}
+    }
+    p.telaSenders = [];
+  }
+
+  // Parâmetros de envio: getParameters → setParameters sem await no meio. Navegador sem suporte: ignora.
+  async function ajustarEnvio(sender, mudar) {
+    if (!sender?.getParameters) return;
+    try {
+      const par = sender.getParameters();
+      if (!par.encodings?.length) return; // ainda não negociou: tenta de novo quando terminar
+      mudar(par);
+      await sender.setParameters(par);
+    } catch {}
+  }
+  // o lugar do microfone é o primeiro transceptor de áudio que não é da tela (existe mesmo só ouvindo)
+  const senderMic = (p) => p.pc.getTransceivers().find((t) => t.receiver.track.kind === 'audio' && !p.telaSenders.includes(t.sender))?.sender;
+  const kbpsVoz = () => (KBPS_VOZ.includes(prefs.vozKbps) ? prefs.vozKbps : PREFS_PADRAO.vozKbps);
+  function aplicarParametros(p) {
+    if (!v || p.pc.signalingState === 'closed') return;
+    // voz com prioridade alta: com a internet apertada, a tela perde qualidade antes da voz
+    ajustarEnvio(senderMic(p), (par) => Object.assign(par.encodings[0], { maxBitrate: kbpsVoz() * 1000, priority: 'high', networkPriority: 'high' }));
+    const tela = p.telaSenders.find((s) => s.track?.kind === 'video');
+    const pref = v.tela?.qualidade.otimizar === 'movimento' ? 'maintain-framerate' : 'maintain-resolution';
+    if (tela) ajustarEnvio(tela, (par) => { par.degradationPreference = pref; });
+  }
+
+  // Quem assiste o quê: store.assistindo muda em vários lugares (palco no app.js, saídas aqui). Um ponto só
+  // compara com o último op 101 mandado; roda no render e quando a voz ou um stream fica pronto, então
+  // pedir para assistir antes da conexão de voz terminar também chega ao servidor.
+  function sincronizarAssistir() {
+    if (!v?.ssrc || v.ws?.readyState !== 1) return; // antes do READY o servidor não aceita nada
+    const quem = store.assistindo;
+    const alvo = quem && quem !== store.me?.id && v.telasIds.has(quem) ? quem : null; // a minha prévia não usa a rede
+    if (alvo === v.assistindoEnviado) return;
+    if (v.assistindoEnviado) {
+      enviar(VOP.STREAM_WATCH, { user_id: v.assistindoEnviado, watching: false });
+      v.telas.delete(v.assistindoEnviado); // ao voltar a assistir, as faixas chegam de novo
+    }
+    if (alvo) enviar(VOP.STREAM_WATCH, { user_id: alvo, watching: true });
+    v.assistindoEnviado = alvo;
+    medirTaxa(alvo);
+  }
+
+  // Taxa recebida da tela assistida (bytes de vídeo do inbound-rtp, a cada ~1 s); para quando para de assistir
+  function medirTaxa(alvo) {
+    if (!v) return;
+    clearInterval(v.medidor);
+    v.timers = v.timers.filter((t) => t !== v.medidor);
+    v.medidor = null; v.taxa = null;
+    if (!alvo) return;
+    const c = v;
+    let antes = null;
+    c.medidor = setInterval(async () => {
+      const pc = c.pares.get(alvo)?.pc;
+      const rel = pc && await pc.getStats().catch(() => null);
+      if (!rel || v !== c || c.assistindoEnviado !== alvo) return;
+      let bytes = 0;
+      rel.forEach((s) => { if (s.type === 'inbound-rtp' && s.kind === 'video') bytes += s.bytesReceived ?? 0; });
+      const agora = performance.now();
+      if (antes && bytes >= antes.bytes) { c.taxa = ((bytes - antes.bytes) * 8000) / (agora - antes.agora); avisar(); }
+      antes = { bytes, agora };
+    }, 1000);
+    c.timers.push(c.medidor);
   }
 
   function pararTela() {
     if (!v?.tela) return;
     v.tela.stream.getTracks().forEach((t) => { t.onended = null; t.stop(); });
-    for (const p of v.pares.values()) {
-      for (const s of p.telaSenders) if (p.pc.signalingState !== 'closed') p.pc.removeTrack(s);
-      p.telaSenders = [];
-    }
+    for (const p of v.pares.values()) tirarTelaDe(p);
+    v.espectadores.clear(); // o op 12 sem stream zera a lista no servidor também
     v.tela = null;
     if (store.assistindo === store.me.id) store.assistindo = null;
     enviar(VOP.VIDEO, { stream_id: null });
@@ -330,30 +541,168 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
     const [faixa] = v.stream.getAudioTracks();
     if (!faixa) { v.escuta = null; return; } // só ouvindo: nada para analisar
     v.escuta = faixa.clone();
+    v.escuta.enabled = true; // o clone herda o "desativado" do mudo: trocar de microfone mudo calaria o aviso
     v.fonteEscuta = v.ctx.createMediaStreamSource(new MediaStream([v.escuta]));
     v.fonteEscuta.connect(v.analisador);
   }
 
   // Trocar microfone ou processamento no meio da chamada: abre o novo e troca a faixa em cada conexão,
-  // sem renegociar (replaceTrack)
-  async function reabrirMicrofone() {
-    if (!v) return;
+  // sem renegociar (replaceTrack). Uma troca por vez: pedidos no meio (devicechange, faixa que acabou,
+  // clique) viram uma repetição só. auto = troca que a pessoa não pediu (aparelho entrou ou saiu).
+  let reabrindo = null, pedido = null;
+  function reabrirMicrofone(auto = false) {
+    if (!v) return Promise.resolve();
+    pedido = { auto: auto === true && (pedido?.auto ?? true) }; // um pedido manual no meio vale como manual
+    reabrindo ??= (async () => {
+      try {
+        while (pedido && v) {
+          const { auto: a } = pedido;
+          pedido = null;
+          await trocarMicrofone(a).catch((e) => console.error('[voz] microfone', e));
+        }
+      } finally { reabrindo = null; pedido = null; }
+    })();
+    return reabrindo;
+  }
+
+  async function trocarMicrofone(auto) {
     const conexao = v;
-    const { stream: novo, semMic } = await abrirMicrofone();
+    const { stream: novo, semMic, reserva } = await abrirMicrofone();
     if (v !== conexao) { novo.getTracks().forEach((t) => t.stop()); return; } // saiu da voz enquanto abria
-    if (semMic) { v.semMic = semMic; avisar(); return; } // continua como estava (ou só ouvindo)
+    const [velha] = v.stream.getAudioTracks(), eraSemMic = !!v.semMic;
+    const viva = velha?.readyState === 'live';
+    if (semMic) {
+      if (viva) { avisoDispositivo(`Não foi possível trocar o microfone: ${semMic}`); return; } // fica no que funciona
+      // perdeu o microfone e nenhum outro abriu: só ouvindo até aparecer um (devicechange)
+      if (!eraSemMic) { v.mudoAntes = v.mute; v.mute = true; }
+      v.semMic = semMic;
+      v.stream.getTracks().forEach(soltarFaixa);
+      v.stream = new MediaStream();
+      escutarMicrofone();
+      enviarGateway({ op: 4, d: estado() });
+      avisar();
+      await trocarFaixa(conexao, null);
+      return;
+    }
     const [faixa] = novo.getAudioTracks();
-    if (v.semMic) { v.semMic = null; v.mute = false; } // achou microfone agora: já sai do mudo
+    // devicechange sem mudança de verdade (ex.: o escolhido voltou, mas segue ocupado): fica com o que já está aberto
+    if (auto && viva && faixa.label === velha.label && faixa.getSettings().deviceId === velha.getSettings().deviceId) {
+      novo.getTracks().forEach((t) => t.stop());
+      return;
+    }
+    if (eraSemMic) {
+      v.semMic = null;
+      if (auto) v.mute = v.deaf || !!v.mudoAntes; // voltou o microfone: fica como estava antes de perder
+      else { v.mute = false; if (v.deaf) { v.deaf = false; aplicarGanhos(); } } // clicou no microfone: quer falar
+      v.mudoAntes = null;
+    }
     faixa.enabled = !v.mute;
-    const antigas = v.stream.getAudioTracks();
-    // o lugar do microfone é o primeiro transceptor de áudio que não é da tela (existe mesmo só ouvindo)
-    await Promise.all([...v.pares.values()].map((p) => p.pc.getTransceivers()
-      .find((t) => t.receiver.track.kind === 'audio' && !p.telaSenders.includes(t.sender))?.sender.replaceTrack(faixa)));
-    antigas.forEach((t) => t.stop());
+    await trocarFaixa(conexao, faixa);
+    if (v !== conexao) { novo.getTracks().forEach((t) => t.stop()); return; }
+    faixa.enabled = !v.mute; // mudo/desmudo durante a troca
+    const antes = velha?.label;
+    v.stream.getTracks().forEach(soltarFaixa);
     v.stream = novo;
+    // quem conectou durante a troca nasceu com a faixa velha (ou sem nenhuma): troca nele também
+    v.pares.forEach((p) => { const s = senderMic(p); if (s && s.track !== faixa) s.replaceTrack(faixa).catch(() => {}); });
+    v.pares.forEach((p) => aplicarParametros(p)); // a qualidade da voz vale para o microfone novo também
+    vigiarFaixa(faixa);
     escutarMicrofone();
+    lembrarPadrao();
+    if (auto && eraSemMic) avisoDispositivo(`Microfone conectado: ${micEmUso()}`);
+    else if (auto && faixa.label !== antes) avisoDispositivo(`Microfone trocado para: ${micEmUso()}`);
+    else if (!auto && reserva) avisoDispositivo(`O microfone escolhido não abriu. Usando: ${micEmUso()}`);
     enviarGateway({ op: 4, d: estado() });
     avisar();
+  }
+
+  const trocarFaixa = (c, faixa) => Promise.allSettled([...c.pares.values()].map((p) => senderMic(p)?.replaceTrack(faixa)));
+  const micEmUso = () => { const f = v?.stream.getAudioTracks()[0]; return f?.readyState === 'live' ? nomeDispositivo(f.label) || 'Microfone' : null; };
+
+  // Fone desconectado (ou driver reiniciado): a faixa acaba sem aviso e a chamada ficaria muda
+  function aoAcabarFaixa(e) { if (v && v.stream.getAudioTracks()[0] === e.target) reabrirMicrofone(true); }
+  const vigiarFaixa = (f) => f?.addEventListener('ended', aoAcabarFaixa);
+  const soltarFaixa = (f) => { f.removeEventListener('ended', aoAcabarFaixa); f.stop(); };
+
+  // Linha curta no painel de voz depois de uma troca que a pessoa não pediu; some sozinha
+  function avisoDispositivo(texto) {
+    const c = v;
+    if (!c) return;
+    const aviso = (c.avisoDisp = { texto });
+    // limpar() cancela com clearInterval: setTimeout e setInterval dividem os mesmos ids
+    c.timers.push(setTimeout(() => { if (c.avisoDisp === aviso) { c.avisoDisp = null; avisar(); } }, 6000));
+    avisar();
+  }
+
+  // ── Aparelhos entrando e saindo (um ouvinte só, para a vida toda do cliente) ──
+  let ultimoPadrao = null, timerDispositivos = 0;
+  const lembrarPadrao = () => listarDispositivos().then((l) => { ultimoPadrao = assinaturaPadrao(l); });
+  async function verificarDispositivos() {
+    const lista = await listarDispositivos();
+    const padraoAntes = ultimoPadrao;
+    ultimoPadrao = assinaturaPadrao(lista);
+    teste?.reiniciar(); // fora da chamada, o teste reabre e segue o aparelho novo
+    if (!v) return;
+    seguirSaida(lista);
+    const [faixa] = v.stream.getAudioTracks();
+    if (deveReabrir({ lista, semMic: !!v.semMic, bloqueado: v.semMic === MOTIVO_SEM_MIC.NotAllowedError, faixaViva: faixa?.readyState === 'live',
+      idAtual: faixa?.getSettings().deviceId, escolhido: prefs.entrada, padraoAntes, padraoAgora: ultimoPadrao })) reabrirMicrofone(true);
+  }
+  // o Windows manda vários devicechange seguidos por aparelho: espera assentar
+  navigator.mediaDevices?.addEventListener?.('devicechange', () => {
+    clearTimeout(timerDispositivos);
+    timerDispositivos = setTimeout(() => verificarDispositivos().catch((e) => console.error('[voz] dispositivos', e)), 500);
+  });
+  lembrarPadrao();
+
+  // Saída escolhida desconectada: toca no padrão do sistema e volta para ela quando reaparece
+  function seguirSaida(lista) {
+    const ctx = v.saida.ctx;
+    if (!prefs.saida || !ctx.setSinkId || typeof ctx.sinkId !== 'string') return;
+    const alvo = alvoSaida(lista, prefs.saida);
+    if (ctx.sinkId === alvo) return;
+    ctx.setSinkId(alvo).then(() => ctx.resume()).catch(() => {});
+    avisoDispositivo(alvo ? 'Saída de áudio reconectada.' : 'Saída de áudio desconectada: tocando no padrão do sistema.');
+  }
+
+  // Teste do microfone (página "Voz e áudio"): na chamada lê o mesmo analisador do indicador de fala;
+  // fora dela abre o microfone só para o teste. aoNivel recebe { nivel (0–100), fala, microfone, erro }.
+  let teste = null;
+  function testarMicrofone(aoNivel) {
+    teste?.parar();
+    let temp = null, abrindo = false, geracao = 0, pico = 0;
+    const amostra = new Float32Array(512);
+    const fecharTemp = () => { geracao++; temp?.stream?.getTracks().forEach((t) => t.stop()); temp?.ctx?.close().catch(() => {}); temp = null; };
+    async function abrirTemp() {
+      const g = geracao;
+      abrindo = true;
+      const r = await abrirMicrofone();
+      abrindo = false;
+      if (teste !== este || v || g !== geracao) { r.stream.getTracks().forEach((t) => t.stop()); return; } // parou, entrou na voz ou trocou o aparelho
+      if (r.semMic) { temp = { erro: r.semMic }; return; }
+      const ctx = new AudioContext(), an = ctx.createAnalyser();
+      ctx.resume().catch(() => {});
+      an.fftSize = amostra.length;
+      ctx.createMediaStreamSource(r.stream).connect(an);
+      temp = { stream: r.stream, ctx, an };
+    }
+    const timer = setInterval(() => {
+      if (v || temp?.stream?.getAudioTracks()[0]?.readyState === 'ended') { if (temp) fecharTemp(); } // na chamada usa o dela
+      else if (!temp && !abrindo) abrirTemp();
+      const an = v ? v.analisador : temp?.an;
+      let rms = 0;
+      if (an) { an.getFloatTimeDomainData(amostra); rms = Math.sqrt(amostra.reduce((s, x) => s + x * x, 0) / amostra.length); }
+      pico = Math.max(nivelDe(rms), pico * 0.8); // sobe na hora, desce devagar
+      const f = v ? v.stream.getAudioTracks()[0] : temp?.stream?.getAudioTracks()[0];
+      aoNivel({ nivel: pico, fala: rms > LIMIAR_FALA, microfone: f?.readyState === 'live' ? nomeDispositivo(f.label) || 'Microfone' : null,
+        erro: (v ? v.semMic : temp?.erro) ?? null });
+    }, 50);
+    const este = {
+      parar() { clearInterval(timer); fecharTemp(); if (teste === este) teste = null; },
+      reiniciar() { if (!v && temp) fecharTemp(); else if (abrindo) geracao++; },
+    };
+    teste = este;
+    return este.parar;
   }
 
   function alternarMutoLocal(userId) {
@@ -372,28 +721,45 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
       salvarPrefs(); aplicarGanhos(); avisar();
     },
     definirVolumeGeral(valor) { prefs.volumeGeral = Math.min(1, Math.max(0, Number(valor) || 0)); salvarPrefs(); aplicarGanhos(); },
-    async definirSaida(id) {
-      prefs.saida = String(id ?? ''); salvarPrefs();
+    async definirSaida(id, nome) {
+      prefs.saida = String(id ?? ''); if (nome) prefs.saidaNome = nome; salvarPrefs();
       if (v?.saida.ctx.setSinkId) await v.saida.ctx.setSinkId(prefs.saida).catch((e) => alert(`Não foi possível usar essa saída: ${e.message}`));
     },
-    async definirEntrada(id) { prefs.entrada = String(id ?? ''); salvarPrefs(); await reabrirMicrofone().catch((e) => alert(`Não foi possível usar esse microfone: ${e.message}`)); },
+    // nome: para o <select> mostrar "Fone X (desconectado)" quando ele sumir
+    async definirEntrada(id, nome) { prefs.entrada = String(id ?? ''); if (nome) prefs.entradaNome = nome; salvarPrefs(); teste?.reiniciar(); await reabrirMicrofone().catch((e) => alert(`Não foi possível usar esse microfone: ${e.message}`)); },
     async definirProcessamento({ ruido, eco }) {
       if (ruido != null) prefs.ruido = !!ruido;
       if (eco != null) prefs.eco = !!eco;
-      salvarPrefs();
+      salvarPrefs(); teste?.reiniciar();
       await reabrirMicrofone().catch(() => {});
     },
+    testarMicrofone,
+    limiarNivel: nivelDe(LIMIAR_FALA), // onde fica a marca de "aparece falando" na barra do teste
     escolheSaida: typeof AudioContext !== 'undefined' && 'setSinkId' in AudioContext.prototype,
+    tela: () => normalizarTela(prefs.tela), // última escolha do "Compartilhar tela"
+    qualidadeVoz: kbpsVoz,
+    // vale na hora para todas as conexões (sem renegociar)
+    definirQualidadeVoz(kbps) {
+      if (!KBPS_VOZ.includes(Number(kbps))) return;
+      prefs.vozKbps = Number(kbps); salvarPrefs();
+      v?.pares.forEach((p) => aplicarParametros(p));
+    },
   };
 
   return {
-    entrar, sair, alternarMudo, alternarSurdo, servidorPronto, alternarMutoLocal, compartilharTela, pararTela, ajustes,
+    entrar, sair: sairComSom, alternarMudo, alternarSurdo, servidorPronto, alternarMutoLocal, compartilharTela, pararTela, ajustes,
+    sincronizarAssistir,
     mutadoLocal: (userId) => mutadosLocal.has(userId),
+    // quantos assistem a tela de alguém (a minha: quem o servidor disse pelo op 101)
+    espectadores: (userId) => (!v ? 0 : userId === store.me?.id ? v.espectadores.size : v.espectadoresDe.get(userId)?.length ?? 0),
+    taxaRecebida: (userId) => (v && v.assistindoEnviado === userId ? v.taxa : null), // bits/s; null = ainda medindo
     // tela de alguém (ou a minha, como prévia) para o palco; null se não houver
     tela: (userId) => (userId === store.me?.id ? v?.tela?.stream : v?.telas.get(userId)) ?? null,
     surdo: () => !!v?.deaf,
+    avisoQueda: () => avisoQueda, // "Conexão de voz caiu." por alguns segundos, já fora da chamada
     atual: () => v && { channelId: v.channelId, status: v.status, mute: v.mute, deaf: v.deaf, avisoMudo: !!v.avisoMudo, semMic: v.semMic ?? null,
-      transmitindo: !!v.tela, qualidade: v.tela?.qualidade.nome,
+      microfone: micEmUso(), avisoDispositivo: v.avisoDisp?.texto ?? null, // microfone: nome do que está em uso (null só ouvindo)
+      transmitindo: !!v.tela, qualidade: v.tela?.qualidade.nome, espectadores: v.tela ? v.espectadores.size : 0,
       conectados: [...v.pares.values()].filter((p) => p.pc.connectionState === 'connected').length },
     // nova sessão no gateway principal (READY, não RESUMED): a voz antiga não vale mais
     resetar: () => { if (v) { const a = v; v = null; limpar(a); } },

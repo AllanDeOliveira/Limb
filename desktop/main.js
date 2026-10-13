@@ -131,6 +131,8 @@ function criarJanela(endpoint) {
       // Minimizado numa chamada, o Chromium estrangularia timers (heartbeat da voz, indicador de fala)
       // até a conexão cair. O Discord desliga isso também.
       backgroundThrottling: false,
+      // Sons da chamada (alguém entrou, menção) tocam mesmo antes do primeiro clique na janela
+      autoplayPolicy: 'no-user-gesture-required',
     },
   });
   vigiar(janela, 'principal');

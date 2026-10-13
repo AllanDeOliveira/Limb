@@ -3,7 +3,9 @@
 // e cada store registra handlers por tipo (`new Store(dispatcher, {MESSAGE_CREATE(e){...}})`).
 
 import { pack, unpack } from './etf.js';
-import { criarClienteVoz, QUALIDADES } from './voz.js';
+import { criarClienteVoz, RESOLUCOES, TAXAS, codecsDeVideo, estimativaTela } from './voz.js';
+import { opcoesDispositivos } from './dispositivos.js';
+import { criarSons } from './sons.js';
 
 const EPOCH = 1420070400000n;
 const tsOf = (id) => new Date(Number((BigInt(id) >> 22n) + EPOCH)); // a data está dentro do snowflake
@@ -136,7 +138,11 @@ handlers.push({ // ReadStateStore
     const rs = store.readState.get(data.channel_id) ?? { channel_id: data.channel_id, last_message_id: lidoAte(data.channel_id), mention_count: 0 };
     store.readState.set(data.channel_id, rs);
     if (data.author.id === store.me.id) { rs.last_message_id = data.id; return; } // o que eu mando já está lido
-    if (data.mentions.includes(store.me.id)) { rs.mention_count++; notificar(data); }
+    if (data.mentions.includes(store.me.id)) {
+      rs.mention_count++; notificar(data);
+      // lendo o canal agora, com a janela na frente: a menção já está na cara, não precisa de som
+      if (!(data.channel_id === store.channelId && document.visibilityState === 'visible' && document.hasFocus())) sons.tocar('mencao');
+    }
     if (data.channel_id === store.channelId && document.visibilityState === 'visible') ackar();
   },
   MESSAGE_ACK: ({ data }) => {
@@ -147,15 +153,33 @@ handlers.push({ // ReadStateStore
 handlers.push({ // VoiceStateStore
   READY: ({ data }) => {
     store.voiceStates = new Map(data.voice_states.map((s) => [s.user_id, s]));
+    if (voz.atual()) sons.tocar('desconectado'); // estava numa chamada: ela caiu junto
     voz.resetar(); // sessão nova: a conexão de voz anterior morreu com a sessão antiga
   },
   VOICE_STATE_UPDATE: ({ data }) => {
+    const antes = store.voiceStates.get(data.user_id); // lido antes de atualizar: é a comparação que dá o som
     data.channel_id ? store.voiceStates.set(data.user_id, data) : store.voiceStates.delete(data.user_id);
-    if (data.user_id === store.me.id && data.channel_id === null && voz.atual()) voz.resetar(); // saiu por outra aba
+    // saiu por outra aba; só se o null é do canal em que estou (um atrasado do canal anterior não derruba o atual)
+    if (data.user_id === store.me.id && data.channel_id === null && voz.atual()?.channelId === antes?.channel_id) voz.resetar();
+    somDeVoz(antes, data);
   },
   VOICE_SERVER_UPDATE: ({ data }) => voz.servidorPronto(data),
   VOICE_STATE_ERROR: ({ data }) => { voz.resetar(); alert(data.message); },
 });
+
+// Sons de quem entra, sai ou transmite no MEU canal de voz. Só mudanças ao vivo: o READY já traz quem
+// está em cada canal (sem VOICE_STATE_UPDATE), quem já estava no canal em que eu entrei não muda de
+// estado, e os eventos reenviados no RESUME são passado.
+function somDeVoz(antes, depois) {
+  const meu = voz.atual()?.channelId;
+  if (!meu || gateway.retomando) return;
+  const eu = depois.user_id === store.me?.id;
+  const estava = antes?.channel_id === meu, esta = depois.channel_id === meu;
+  if (!eu && !estava && esta) sons.tocar('outroEntrou');
+  else if (!eu && estava && !esta) sons.tocar('outroSaiu');
+  // inclusive a minha transmissão: o servidor devolve o meu próprio estado também
+  else if (estava && esta && !!antes.self_stream !== !!depois.self_stream) sons.tocar(depois.self_stream ? 'transmissaoInicio' : 'transmissaoFim');
+}
 
 handlers.push({ // TypingStore
   TYPING_START: ({ data }) => {
@@ -176,12 +200,14 @@ handlers.push({ // SearchStore
 
 // ── REST ────────────────────────────────────────────────────────────────────
 async function api(method, path, body) {
+  const token = store.token;
   const r = await fetch(`/api${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json', Authorization: store.token ?? '' },
+    headers: { 'Content-Type': 'application/json', Authorization: token ?? '' },
     body: body && JSON.stringify(body),
   });
-  if (r.status === 401) { sair(); throw new Error('Sessão expirada'); }
+  // token revogado ou vencido; resposta atrasada de antes de sair não conta
+  if (r.status === 401) { if (token && token === store.token) sessaoTerminou(); throw new Error('Sua sessão terminou'); }
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).message || r.statusText);
   return r.status === 204 ? null : r.json();
 }
@@ -235,6 +261,7 @@ const OP = { DISPATCH: 0, HEARTBEAT: 1, IDENTIFY: 2, RESUME: 6, INVALID_SESSION:
 const gateway = {
   ws: null, timer: null, acked: true, tentativas: 0,
   sessionId: null, seq: 0,
+  retomando: false, // entre o RESUME e o RESUMED: chegam os eventos perdidos, que não devem tocar som
   connect() {
     dispatch({ type: 'CONNECTION_STATE', state: 'conectando…' });
     // ETF binário, como o desktop do Discord com discord_erlpack; ?encoding=json também funciona
@@ -252,6 +279,7 @@ const gateway = {
       if (p.op === OP.HELLO) {
         this.heartbeat(p.d.heartbeat_interval);
         // como o `_doResumeOrIdentify` do Discord: com sessão, tenta retomar sem perder eventos
+        this.retomando = !!this.sessionId;
         if (this.sessionId) enviar({ op: OP.RESUME, d: { token: store.token, session_id: this.sessionId, seq: this.seq } });
         else identify();
       } else if (p.op === OP.INVALID_SESSION) identify();
@@ -259,14 +287,14 @@ const gateway = {
       else if (p.op === OP.DISPATCH) {
         this.seq = p.s;
         if (p.t === 'READY') this.sessionId = p.d.session_id;
-        if (p.t === 'READY' || p.t === 'RESUMED') { this.tentativas = 0; dispatch({ type: 'CONNECTION_STATE', state: 'conectado' }); }
+        if (p.t === 'READY' || p.t === 'RESUMED') { this.tentativas = 0; this.retomando = false; dispatch({ type: 'CONNECTION_STATE', state: 'conectado' }); }
         dispatch({ type: p.t, data: p.d });
       }
     };
     ws.onclose = (e) => {
       clearTimeout(this.timer);
       if (ws !== this.ws) return;
-      if (e.code === 4004) return sair(); // token inválido
+      if (e.code === 4004) return sessaoTerminou(); // token revogado, vencido ou inválido
       if (e.code === 4009) this.sessionId = null; // sessão expirou no servidor: não dá para retomar
       const espera = Math.min(30_000, 1000 * 2 ** this.tentativas++);
       dispatch({ type: 'CONNECTION_STATE', state: `reconectando em ${Math.round(espera / 1000)}s` });
@@ -288,10 +316,13 @@ const gateway = {
   close() { const ws = this.ws; this.ws = null; this.sessionId = null; clearTimeout(this.timer); ws?.close(1000); },
 };
 
+// Sons da chamada: saem no mesmo alto-falante escolhido para a voz
+const sons = criarSons({ saida: () => voz.ajustes.prefs().saida });
 const voz = criarClienteVoz({
   store, dispatch,
   enviarGateway: (p) => { if (gateway.ws?.readyState === 1) gateway.enviar(p); },
   sessionId: () => gateway.sessionId,
+  tocar: sons.tocar,
 });
 
 // ── Navegação ───────────────────────────────────────────────────────────────
@@ -374,6 +405,7 @@ const ICONES = {
   apagar: 'M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2',
   marca: 'M8 3v18M8 15c0-4 3-6.5 8.5-7.5M16.5 7.5 14.5 4M16.5 7.5l3.5.5',
   ajustes: 'M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6',
+  conta: 'M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2M12 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0-8 0',
 };
 function icone(nomeIcone, tam = 20) {
   const SVG = 'http://www.w3.org/2000/svg';
@@ -418,7 +450,7 @@ function pedirTexto(titulo, inicial = '', max = 100) {
 function notificar(m) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
   if (document.visibilityState === 'visible' && document.hasFocus()) return;
-  const n = new Notification(`${m.author.username} em #${canalPorId(m.channel_id)?.name ?? '?'}`, { body: m.content.slice(0, 200), tag: m.channel_id });
+  const n = new Notification(`${m.author.username} em #${canalPorId(m.channel_id)?.name ?? '?'}`, { body: m.content.slice(0, 200), tag: m.channel_id, silent: true }); // o som é o 'mencao' do sons.js, que respeita as preferências
   n.onclick = () => { ponte()?.focar(); window.focus(); selecionarCanal(m.channel_id); n.close(); };
 }
 function agendarRender() {
@@ -432,6 +464,7 @@ function agendarRender() {
 // Sair e trocar de servidor: sempre visíveis, até antes de conectar (senão uma falha deixa a janela sem saída)
 const botoesConta = () => [
   botaoIcone('ajustes', 'Voz e áudio', { onclick: abrirAjustesAudio }),
+  botaoIcone('conta', 'Minha conta', { onclick: abrirConta }),
   ponte()?.abrirConexao && botaoIcone('servidor', 'Trocar de servidor', { onclick: abrirServidores }),
   botaoIcone('sair', 'Sair da conta', { onclick: sair }),
 ];
@@ -606,30 +639,106 @@ if (ponte()?.hospedagem) { checarHospedagem(); setInterval(checarHospedagem, 20_
 // Ajustes valem na hora (sem "salvar") e ficam guardados neste computador.
 const audioDlg = $('#audioDlg'), pessoaDlg = $('#pessoaDlg');
 const pct = (x) => `${Math.round(x * 100)}%`;
+// Sem permissão de microfone, o navegador esconde os nomes dos dispositivos
+let dispositivos = [], versaoDispositivos = 0, permissaoPedida = false, pedindoPermissao = false, erroPermissao = null;
+async function preencherDispositivos() {
+  const n = ++versaoDispositivos;
+  const lista = (await navigator.mediaDevices?.enumerateDevices?.().catch(() => null)) ?? [];
+  if (n !== versaoDispositivos) return; // outra leitura mais nova já está a caminho
+  const p = voz.ajustes.prefs(), f = audioDlg.querySelector('form');
+  dispositivos = lista;
+  const opcoes = (tipo, atual, nomeSalvo) => opcoesDispositivos(lista, tipo, atual, nomeSalvo)
+    .map((o) => h('option', { value: o.value, textContent: o.nome, selected: o.selected }));
+  trocar(f.entrada, opcoes('audioinput', p.entrada, p.entradaNome));
+  trocar(f.saida, opcoes('audiooutput', p.saida, p.saidaNome));
+  const semNomes = $('#semNomes');
+  semNomes.hidden = pedindoPermissao || lista.some((d) => d.label); // com o pedido na tela, ainda não dá para dizer
+  semNomes.textContent = !navigator.mediaDevices
+    ? 'Este endereço não dá acesso ao microfone: o navegador só libera em https. Use o app desktop do Limb.'
+    : erroPermissao === 'NotFoundError' ? 'Nenhum microfone encontrado. Ao conectar um, ele aparece aqui sozinho.'
+    : 'Sem permissão para o microfone, os nomes dos aparelhos não aparecem. Libere o microfone para este site (cadeado na barra de endereço) e no Windows (Configurações → Privacidade → Microfone).';
+}
 async function abrirAjustesAudio() {
   const p = voz.ajustes.prefs(), f = audioDlg.querySelector('form');
-  // Sem permissão de microfone, o navegador esconde os nomes dos dispositivos
-  const dispositivos = await navigator.mediaDevices?.enumerateDevices().catch(() => []) ?? [];
-  const opcoes = (tipo, atual) => [h('option', { value: '', textContent: 'Padrão do sistema' }),
-    ...dispositivos.filter((d) => d.kind === tipo && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications')
-      .map((d, i) => h('option', { value: d.deviceId, textContent: d.label || `${tipo === 'audioinput' ? 'Microfone' : 'Saída'} ${i + 1}`, selected: d.deviceId === atual }))];
-  trocar(f.entrada, opcoes('audioinput', p.entrada));
-  trocar(f.saida, opcoes('audiooutput', p.saida));
+  await preencherDispositivos();
   $('#campoSaida').hidden = !voz.ajustes.escolheSaida;
-  $('#semNomes').hidden = dispositivos.some((d) => d.label);
   f.volumeGeral.value = p.volumeGeral;
   $('#volGeralValor').textContent = pct(p.volumeGeral);
+  f.qualidadeVoz.value = String(voz.ajustes.qualidadeVoz());
   f.ruido.checked = p.ruido;
   f.eco.checked = p.eco;
+  mostrarMicEmUso();
+  mostrarSons();
   audioDlg.showModal();
+  // sem nomes: pede o microfone uma vez e solta na hora, só para o navegador liberar os nomes
+  if (dispositivos.some((d) => d.label) || permissaoPedida || !navigator.mediaDevices?.getUserMedia) return;
+  permissaoPedida = pedindoPermissao = true;
+  $('#semNomes').hidden = true;
+  try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach((t) => t.stop()); } catch (e) { erroPermissao = e.name; } // ocupado também libera os nomes
+  pedindoPermissao = false;
+  await preencherDispositivos();
+}
+// Aparelho conectado ou desconectado com a página aberta: atualiza as listas (a escolha fica)
+navigator.mediaDevices?.addEventListener?.('devicechange', () => { if (audioDlg.open) preencherDispositivos(); });
+
+// "Testar microfone": barra com o volume ao vivo e a marca de onde você aparece falando
+let pararTesteMic = null, micDoTeste = null, erroDoTeste = null;
+function mostrarMicEmUso() {
+  const a = voz.atual(), mic = a ? a.microfone : micDoTeste, erro = a ? a.semMic : erroDoTeste;
+  const t = mic ? `Em uso agora: ${mic}` : erro ? `Sem microfone: ${erro}` : '';
+  if ($('#micEmUso').textContent !== t) $('#micEmUso').textContent = t;
+}
+function pararTeste() {
+  pararTesteMic?.();
+  pararTesteMic = micDoTeste = erroDoTeste = null;
+  const barra = $('#micNivel');
+  barra.firstElementChild.style.width = '0';
+  barra.classList.remove('fala');
+  barra.setAttribute('aria-valuenow', '0');
+  $('#micTestar').textContent = 'Testar microfone';
+  $('#micTestar').classList.remove('ativo');
+  $('#micDica').hidden = true;
+  mostrarMicEmUso();
+}
+$('#micTestar').addEventListener('click', () => {
+  if (pararTesteMic) return pararTeste();
+  const barra = $('#micNivel'), nivel = barra.firstElementChild;
+  pararTesteMic = voz.ajustes.testarMicrofone(({ nivel: n, fala, microfone, erro }) => {
+    nivel.style.width = `${n}%`;
+    barra.classList.toggle('fala', fala);
+    const arred = String(Math.round(n));
+    if (barra.getAttribute('aria-valuenow') !== arred) barra.setAttribute('aria-valuenow', arred);
+    micDoTeste = microfone; erroDoTeste = erro;
+    mostrarMicEmUso();
+  });
+  $('#micTestar').textContent = 'Parar teste';
+  $('#micTestar').classList.add('ativo');
+  $('#micDica').hidden = false;
+});
+audioDlg.addEventListener('close', pararTeste); // "Pronto" ou Esc: solta o microfone do teste
+$('#micNivel i').style.left = `${voz.ajustes.limiarNivel}%`;
+// Sons: guardados à parte ('limb.sons'); sem "Tocar sons", o resto fica desativado
+function mostrarSons() {
+  const s = sons.config(), f = audioDlg.querySelector('form');
+  f.sons.checked = s.ligado;
+  $('#sonsOpcoes').disabled = !s.ligado;
+  f.sonsVolume.value = s.volume;
+  $('#sonsVolValor').textContent = pct(s.volume);
+  for (const c of f.querySelectorAll('[data-categoria]')) c.checked = s.categorias[c.dataset.categoria];
 }
 {
   const f = audioDlg.querySelector('form');
-  f.entrada.addEventListener('change', () => voz.ajustes.definirEntrada(f.entrada.value));
-  f.saida.addEventListener('change', () => voz.ajustes.definirSaida(f.saida.value));
+  const nomeDe = (tipo, id) => dispositivos.find((d) => d.kind === tipo && d.deviceId === id)?.label;
+  f.entrada.addEventListener('change', () => voz.ajustes.definirEntrada(f.entrada.value, nomeDe('audioinput', f.entrada.value)).then(mostrarMicEmUso));
+  f.saida.addEventListener('change', () => voz.ajustes.definirSaida(f.saida.value, nomeDe('audiooutput', f.saida.value)));
   f.volumeGeral.addEventListener('input', () => { voz.ajustes.definirVolumeGeral(f.volumeGeral.value); $('#volGeralValor').textContent = pct(f.volumeGeral.value); });
+  f.qualidadeVoz.addEventListener('change', () => voz.ajustes.definirQualidadeVoz(f.qualidadeVoz.value));
   f.ruido.addEventListener('change', () => voz.ajustes.definirProcessamento({ ruido: f.ruido.checked }));
   f.eco.addEventListener('change', () => voz.ajustes.definirProcessamento({ eco: f.eco.checked }));
+  f.sons.addEventListener('change', () => { sons.definir({ ligado: f.sons.checked }); mostrarSons(); });
+  f.sonsVolume.addEventListener('input', () => { sons.definir({ volume: f.sonsVolume.value }); $('#sonsVolValor').textContent = pct(f.sonsVolume.value); });
+  for (const c of f.querySelectorAll('[data-categoria]')) c.addEventListener('change', () => sons.definir({ categorias: { [c.dataset.categoria]: c.checked } }));
+  $('#sonsTestar').addEventListener('click', () => sons.testar());
 }
 
 let pessoaAtual = null;
@@ -645,8 +754,14 @@ $('#pessoaVol').addEventListener('input', (e) => { voz.ajustes.definirVolume(pes
 $('#pessoaMudo').addEventListener('change', (e) => { if (e.target.checked !== voz.mutadoLocal(pessoaAtual)) voz.alternarMutoLocal(pessoaAtual); });
 $('#pessoaPadrao').addEventListener('click', () => { voz.ajustes.definirVolume(pessoaAtual, 1); $('#pessoaVol').value = 1; $('#pessoaValor').textContent = '100%'; });
 
+// microfone em uso na dica do botão (title com quebra de linha)
+const dicaMic = (botao, mic) => { if (mic) botao.title += `\nMicrofone: ${mic}`; return botao; };
 function renderPainelVoz() {
   const a = voz.atual();
+  // fora do #voice (que é recriado a cada render): o leitor de tela só anuncia o que muda num status que já existe
+  const aviso = a?.avisoDispositivo ?? voz.avisoQueda() ?? '';
+  if ($('#vozAviso').textContent !== aviso) $('#vozAviso').textContent = aviso;
+  if (audioDlg.open) mostrarMicEmUso();
   $('#voice').hidden = !a;
   if (!a) return;
   trocar($('#voice'),
@@ -654,10 +769,12 @@ function renderPainelVoz() {
       h('b', { className: a.status === 'conectado' ? 'ok' : '', textContent: a.status === 'conectado' ? 'Voz conectada' : 'Conectando…' }),
       h('small', { textContent: `${canalPorId(a.channelId)?.name ?? ''} · ${a.conectados} com áudio` }),
       a.transmitindo && h('small', { className: 'ok', textContent: `Transmitindo · ${a.qualidade}` }),
+      // a tela só sai do computador para quem assiste: com ninguém, não gasta internet
+      a.transmitindo && h('small', { textContent: assistindoTexto(a.espectadores) || 'Ninguém assistindo ainda' }),
       a.semMic && h('small', { className: 'aviso', role: 'status', title: a.semMic, textContent: `Só ouvindo: ${a.semMic}` }),
       !a.semMic && a.avisoMudo && h('small', { className: 'aviso', role: 'status', textContent: 'Você está mudo' })),
-    botaoIcone(a.mute ? 'micOff' : 'mic', a.semMic ? 'Tentar o microfone de novo' : a.mute ? 'Ligar microfone' : 'Desligar microfone',
-      { className: a.mute ? 'off' : '', ariaPressed: String(a.mute), onclick: voz.alternarMudo }),
+    dicaMic(botaoIcone(a.mute ? 'micOff' : 'mic', a.semMic ? 'Tentar o microfone de novo' : a.mute ? 'Ligar microfone' : 'Desligar microfone',
+      { className: a.mute ? 'off' : '', ariaPressed: String(a.mute), onclick: voz.alternarMudo }), a.microfone),
     botaoIcone(a.deaf ? 'foneOff' : 'fone', a.deaf ? 'Ligar áudio' : 'Desligar áudio', { className: a.deaf ? 'off' : '', ariaPressed: String(a.deaf), onclick: voz.alternarSurdo }),
     botaoIcone('tela', a.transmitindo ? 'Parar de compartilhar' : 'Compartilhar tela', {
       className: a.transmitindo ? 'on' : '', ariaPressed: String(a.transmitindo),
@@ -678,10 +795,13 @@ async function assistir(userId) {
   store.assistindo = userId;
   agendarRender();
 }
+const assistindoTexto = (n) => (n ? `${n} ${n === 1 ? 'pessoa assistindo' : 'pessoas assistindo'}` : '');
+const mbps = (bps) => (bps >= 1e6 ? `${(bps / 1e6).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} Mbit/s` : `${Math.round(bps / 1e3)} kbit/s`);
 function renderPalco() {
   const quem = store.assistindo;
   const ativo = quem && store.voiceStates.get(quem)?.self_stream;
   if (quem && !ativo) store.assistindo = null; // a pessoa parou de transmitir ou saiu
+  voz.sincronizarAssistir(); // avisa o servidor (op 101) se mudou quem eu assisto
   const video = $('#palcoVideo');
   $('main').classList.toggle('assistindo', !!ativo);
   $('#palco').hidden = !ativo;
@@ -694,7 +814,12 @@ function renderPalco() {
   video.muted = quem === store.me.id || voz.surdo(); // a própria tela nunca toca: eco
   const [faixa] = stream?.getVideoTracks() ?? [];
   const cfg = faixa?.getSettings();
-  $('#palcoInfo').textContent = cfg?.height ? `${cfg.width}×${cfg.height}${cfg.frameRate ? ` · ${Math.round(cfg.frameRate)} fps` : ''}` : '';
+  const taxa = voz.taxaRecebida(quem); // só de quem eu assisto (a prévia não passa pela rede)
+  $('#palcoInfo').textContent = [
+    cfg?.height && `${cfg.width}×${cfg.height}${cfg.frameRate ? ` · ${Math.round(cfg.frameRate)} fps` : ''}`,
+    stream && taxa != null && mbps(taxa),
+    assistindoTexto(voz.espectadores(quem)),
+  ].filter(Boolean).join(' · ');
 }
 $('#palcoVol').addEventListener('input', (e) => { $('#palcoVideo').volume = Number(e.target.value); });
 $('#palcoFechar').addEventListener('click', () => { store.assistindo = null; agendarRender(); });
@@ -706,10 +831,27 @@ $('#palcoVideo').addEventListener('dblclick', () => $('#palcoCheia').click());
 // ── Escolher o que compartilhar ──────────────────────────────────────────────
 // App desktop: seletor próprio com miniaturas (o Electron não tem o do Chrome). Navegador: o do Chrome.
 const telaDlg = $('#telaDlg');
-for (const [id, q] of Object.entries(QUALIDADES)) telaDlg.querySelector('select').append(h('option', { value: id, textContent: q.nome, selected: id === '1080p30' }));
+{
+  const f = telaDlg.querySelector('form'), codecs = codecsDeVideo();
+  const NOME_CODEC = { H264: 'H.264 (mais leve)', VP9: 'VP9', AV1: 'AV1 (melhor imagem, mais pesado)' };
+  trocar(f.resolucao, RESOLUCOES.map((r) => h('option', { value: r, textContent: r === 'original' ? 'Original' : `${r}p` })));
+  trocar(f.fps, TAXAS.map((n) => h('option', { value: String(n), textContent: `${n} fps` })));
+  trocar(f.codec, h('option', { value: '', textContent: 'Automático' }), codecs.map((c) => h('option', { value: c, textContent: NOME_CODEC[c] })));
+  $('#telaAvancado').hidden = !codecs.length; // navegador sem escolha de codec: nada a mostrar
+  f.addEventListener('change', estimarTela);
+}
+// Malha P2P: cada pessoa assistindo recebe uma cópia, direto do seu computador
+function estimarTela() {
+  const f = telaDlg.querySelector('form'), original = f.resolucao.value === 'original';
+  const bps = estimativaTela({ resolucao: f.resolucao.value, fps: f.fps.value });
+  $('#telaEstimativa').textContent = `${original ? 'Até' : '≈'} ${mbps(bps)} de upload por pessoa assistindo`;
+}
 async function escolherTela() {
   const nativo = ponte();
   const form = telaDlg.querySelector('form');
+  const ultima = voz.ajustes.tela(); // abre com a última escolha
+  for (const k of ['resolucao', 'fps', 'otimizar', 'codec']) form[k].value = String(ultima[k]);
+  estimarTela();
   // som do sistema: Windows no app desktop (loopback); no navegador, o Chrome decide (aba/tela)
   $('#telaAudioCampo').hidden = !!nativo && nativo.plataforma !== 'win32';
   $('#telaDica').textContent = nativo
@@ -718,7 +860,8 @@ async function escolherTela() {
   telaDlg.toggleAttribute('data-desktop', !!nativo);
   trocar($('#telaFontes'));
   const compartilhar = async (fonteId) => {
-    const opcoes = { qualidade: form.qualidade.value, comAudio: form.audio.checked && !$('#telaAudioCampo').hidden };
+    const opcoes = { resolucao: form.resolucao.value, fps: Number(form.fps.value), otimizar: form.otimizar.value, codec: form.codec.value,
+      comAudio: form.audio.checked && !$('#telaAudioCampo').hidden };
     telaDlg.close();
     try {
       if (fonteId && !(await nativo.escolherFonte(fonteId, opcoes.comAudio))) throw new Error('fonte não está mais disponível');
@@ -895,46 +1038,220 @@ $('#pedir textarea').addEventListener('keydown', (e) => {
 });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && store.me) ackar(); });
 
+// ── Minha conta ─────────────────────────────────────────────────────────────
+// Trocar a senha e ver/derrubar os dispositivos conectados (como "Dispositivos" nas configurações do Discord)
+const contaDlg = $('#contaDlg'), senhaForm = $('#senhaForm');
+const statusEm = (sel, texto, tipo = '') => { const el = $(sel); el.textContent = texto; el.className = `status ${tipo}`; };
+function quandoFoi(ms) {
+  const d = new Date(ms), dias = Math.round((diaDe(new Date()) - diaDe(d)) / 86_400_000);
+  const hh = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  return dias === 0 ? `hoje às ${hh}` : dias === 1 ? `ontem às ${hh}` : `em ${d.toLocaleDateString('pt-BR')}`;
+}
+function abrirConta() {
+  senhaForm.reset();
+  senhaForm.username.value = store.me?.username ?? ''; // para o gerenciador de senhas saber de qual conta é
+  statusEm('#senhaStatus', '');
+  $('#contaCaps').textContent = '';
+  $('#contaNome').textContent = store.me?.username ?? '…';
+  contaDlg.showModal();
+  carregarDispositivos();
+}
+async function carregarDispositivos() {
+  const lista = $('#dispositivos');
+  statusEm('#dispStatus', '');
+  trocar(lista, h('li', { className: 'nada', textContent: 'Carregando…' }));
+  let sessoes;
+  try { sessoes = await api('GET', '/users/@me/sessions'); } catch (e) {
+    trocar(lista);
+    statusEm('#dispStatus', `Não foi possível carregar os dispositivos: ${e.message}`, 'erro');
+    return;
+  }
+  $('#sairOutros').disabled = sessoes.length < 2;
+  sessoes.sort((a, b) => b.atual - a.atual); // este dispositivo primeiro; os outros, do uso mais recente
+  trocar(lista, sessoes.map((s) => {
+    const nomeDisp = s.dispositivo || 'Dispositivo desconhecido';
+    return h('li', { className: `srv${s.atual ? ' atual' : ''}` },
+      h('span', { className: 'info' },
+        h('b', { textContent: nomeDisp }),
+        h('small', { textContent: s.atual ? `Conectado desde ${quandoFoi(s.criado)}` : `Último uso ${quandoFoi(s.usado)}` })),
+      s.atual ? h('span', { className: 'tag', textContent: 'ESTE DISPOSITIVO' })
+        : h('button', { type: 'button', className: 'desconectar', textContent: 'Desconectar', ariaLabel: `Desconectar ${nomeDisp} (último uso ${quandoFoi(s.usado)})`,
+          onclick: (e) => desconectar(e.currentTarget, s.id) }));
+  }));
+}
+async function desconectar(botao, id) {
+  botao.disabled = true;
+  try {
+    await api('DELETE', `/users/@me/sessions/${id}`);
+    await carregarDispositivos();
+    $('#dispTitulo').focus(); // o botão clicado sumiu com a lista: o foco não cai no nada
+    statusEm('#dispStatus', 'Dispositivo desconectado.', 'ok');
+  } catch (e) { botao.disabled = false; statusEm('#dispStatus', e.message, 'erro'); }
+}
+$('#sairOutros').addEventListener('click', async (e) => {
+  const botao = e.currentTarget;
+  if (!confirm('Desconectar todos os outros dispositivos? Eles vão precisar entrar de novo.')) return;
+  botao.disabled = true;
+  try {
+    await api('POST', '/users/@me/sessions/encerrar-outras');
+    await carregarDispositivos();
+    $('#dispTitulo').focus();
+    statusEm('#dispStatus', 'Os outros dispositivos foram desconectados.', 'ok');
+  } catch (err) { botao.disabled = false; statusEm('#dispStatus', err.message, 'erro'); }
+});
+senhaForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = senhaForm, botao = $('#senhaBotao');
+  if (f.nova.value !== f.confirmar.value) { statusEm('#senhaStatus', 'A nova senha e a confirmação não são iguais.', 'erro'); f.confirmar.focus(); return; }
+  botao.disabled = true;
+  statusEm('#senhaStatus', 'Alterando a senha…');
+  try {
+    await api('POST', '/users/@me/password', { senha_atual: f.atual.value, senha_nova: f.nova.value });
+    f.atual.value = f.nova.value = f.confirmar.value = '';
+    statusEm('#senhaStatus', 'Senha alterada. Os outros dispositivos foram desconectados.', 'ok');
+    carregarDispositivos();
+  } catch (err) { statusEm('#senhaStatus', err.message, 'erro'); }
+  finally { botao.disabled = false; }
+});
+
+// Caps Lock ligado num campo de senha: avisa (o erro mais comum de "senha incorreta")
+function avisarCaps(campos, aviso) {
+  const ver = (e) => { aviso.textContent = e.getModifierState?.('CapsLock') ? 'Caps Lock está ativado.' : ''; };
+  for (const c of campos) {
+    c.addEventListener('keydown', ver);
+    c.addEventListener('keyup', ver);
+    c.addEventListener('blur', () => { aviso.textContent = ''; });
+  }
+}
+avisarCaps([senhaForm.atual, senhaForm.nova, senhaForm.confirmar], $('#contaCaps'));
+
 // ── Sessão ──────────────────────────────────────────────────────────────────
 const salvo = { get: () => { try { return localStorage.getItem('token'); } catch { return null; } },
   set: (v) => { try { v ? localStorage.setItem('token', v) : localStorage.removeItem('token'); } catch {} } };
+// Já entrou neste servidor alguma vez? Convite abre em "Criar conta" só para quem nunca entrou
+const jaEntrou = { get: () => { try { return localStorage.getItem('jaEntrou') === '1'; } catch { return false; } },
+  marcar: () => { try { localStorage.setItem('jaEntrou', '1'); } catch {} } };
 
+const loginForm = $('#login form');
 function entrar(token) {
   store.token = token;
   salvo.set(token);
+  jaEntrou.marcar();
+  loginForm.password.value = loginForm.confirmar.value = '';
+  mostrarSenha(false);
+  $('#loginAviso').textContent = '';
   $('#login').hidden = true;
   $('#app').hidden = false;
   if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
   gateway.connect();
 }
-function sair(e) {
-  e?.preventDefault?.();
+// Fecha tudo neste aparelho (voz, gateway, token salvo) e volta para a tela de entrar
+function encerrarLocal() {
   voz.sair();
   gateway.close();
   salvo.set(null);
+  for (const d of document.querySelectorAll('dialog[open]')) d.close();
   Object.assign(store, { token: null, me: null, guildId: null, channelId: null, search: null, replyTo: null });
   store.messages.clear();
   $('#app').hidden = true;
   $('#login').hidden = false;
   document.body.classList.remove('nav', 'membros', 'busca-aberta');
+  definirModo('entrar');
 }
-$('#login form').addEventListener('submit', async (e) => {
+// "Sair da conta": o servidor revoga o token deste aparelho. fetch direto, não api(): api() chama
+// sessaoTerminou() no 401, e sair não depende da resposta (sem rede, ao menos esquece o token aqui)
+function sair() {
+  const token = store.token;
+  encerrarLocal();
+  if (token) fetch('/api/logout', { method: 'POST', headers: { Authorization: token }, keepalive: true }).catch(() => {});
+}
+// Token revogado (senha trocada, "Desconectar" em outro aparelho) ou vencido: REST 401 ou gateway 4004
+function sessaoTerminou() {
+  if (voz.atual()) sons.tocar('desconectado'); // a chamada caiu junto com a sessão: não foi escolha minha
+  voz.resetar(); // sem op 4: a sessão já morreu no servidor (e o voz.sair() abaixo fica sem o som de 'sair')
+  encerrarLocal();
+  $('#loginAviso').textContent = 'Sua sessão terminou. Entre de novo.';
+}
+
+// Tela de entrar: "Entrar" (conta existente) ou "Criar conta", como no Discord
+let modoLogin = 'entrar', conviteNoServidor = false, conviteContaAntiga = false;
+function mostrarConvite(sim, dica = 'este servidor pede um código para criar conta') {
+  $('#conviteCampo').hidden = !sim;
+  loginForm.invite.disabled = !sim;
+  $('#conviteDica').textContent = dica;
+}
+function definirModo(modo) {
+  modoLogin = modo;
+  const criar = modo === 'criar', f = loginForm;
+  $('#loginTitulo').textContent = criar ? 'Criar conta' : 'Entrar';
+  $('#loginDica').textContent = criar ? 'Escolha um nome de usuário e uma senha. A conta fica neste servidor.' : 'Que bom te ver de novo!';
+  $('#loginBotao').textContent = criar ? 'Criar conta' : 'Entrar';
+  $('#trocaTexto').textContent = criar ? 'Já tem uma conta?' : 'Precisa de uma conta?';
+  $('#trocaModo').textContent = criar ? 'Entrar' : 'Registre-se';
+  f.password.autocomplete = criar ? 'new-password' : 'current-password';
+  f.password.setAttribute('aria-describedby', criar ? 'regrasSenha capsAviso' : 'capsAviso');
+  $('#confirmarCampo').hidden = !criar;
+  f.confirmar.disabled = !criar; // desabilitado não trava o envio por "required" escondido
+  f.confirmar.required = criar;
+  $('#regrasSenha').hidden = !criar;
+  if (criar) mostrarConvite(conviteNoServidor);
+  else mostrarConvite(conviteContaAntiga, 'esta conta é de antes das senhas: o código confirma que ela é sua');
+  $('#login .error').textContent = '';
+  atualizarRegras();
+}
+// Regras da senha nova ao vivo (a lista de senhas comuns fica só no servidor)
+function atualizarRegras() {
+  const senha = loginForm.password.value, nomeUsuario = loginForm.username.value.trim().toLowerCase();
+  $('#regraTamanho').classList.toggle('ok', senha.length >= 8 && senha.length <= 128);
+  $('#regraNome').classList.toggle('ok', !!senha && !(nomeUsuario.length >= 3 && senha.toLowerCase().includes(nomeUsuario)));
+}
+function mostrarSenha(ver) {
+  $('#mostrarSenha').setAttribute('aria-pressed', String(ver));
+  for (const c of [loginForm.password, loginForm.confirmar]) c.type = ver ? 'text' : 'password';
+}
+$('#mostrarSenha').addEventListener('click', (e) => mostrarSenha(e.currentTarget.getAttribute('aria-pressed') !== 'true'));
+loginForm.password.addEventListener('input', atualizarRegras);
+loginForm.username.addEventListener('input', atualizarRegras);
+avisarCaps([loginForm.password, loginForm.confirmar], $('#capsAviso'));
+$('#trocaModo').addEventListener('click', () => { definirModo(modoLogin === 'criar' ? 'entrar' : 'criar'); loginForm.username.focus(); });
+loginForm.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const f = e.target;
-  try { entrar((await api('POST', '/login', { username: f.username.value, password: f.password.value, invite: f.invite.value || undefined })).token); }
-  catch (err) { $('#login .error').textContent = err.message; }
-  f.password.value = '';
+  const f = loginForm, erro = $('#login .error'), botao = $('#loginBotao'), criar = modoLogin === 'criar';
+  erro.textContent = '';
+  if (criar && f.password.value !== f.confirmar.value) { erro.textContent = 'As senhas não são iguais.'; f.confirmar.focus(); return; }
+  botao.disabled = true;
+  botao.textContent = criar ? 'Criando conta…' : 'Entrando…';
+  try {
+    // fetch direto: o 401 de senha errada não é sessão terminada
+    const r = await fetch(`/api/${criar ? 'register' : 'login'}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: f.username.value, password: f.password.value, invite: f.invite.disabled ? undefined : f.invite.value || undefined }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      if (d.convite && !criar) { conviteContaAntiga = true; definirModo('entrar'); f.invite.focus(); }
+      throw new Error(d.message || `Erro ${r.status}`);
+    }
+    entrar(d.token);
+  } catch (err) {
+    erro.textContent = err instanceof TypeError ? 'Não foi possível falar com o servidor. Confira a conexão e tente de novo.' : err.message;
+  } finally {
+    botao.disabled = false;
+    botao.textContent = modoLogin === 'criar' ? 'Criar conta' : 'Entrar';
+  }
 });
 // Diz onde a conta vai ser criada: no app desktop, o servidor embutido é "este computador"
 $('#ondeServidor').textContent = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) ? 'este computador' : location.host;
-// Servidor com código de convite: mostra o campo
-fetch('/api/info').then((r) => r.json()).then((i) => { $('#conviteCampo').hidden = !i.convite; }).catch(() => {});
 // Convite colado no app desktop chega como #convite=…: preenche o campo e tira do endereço
 const conviteUrl = /[#&]convite=([^&]+)/.exec(location.hash)?.[1];
 if (conviteUrl) {
-  $('#login form').invite.value = decodeURIComponent(conviteUrl);
+  loginForm.invite.value = decodeURIComponent(conviteUrl);
   history.replaceState(null, '', location.pathname + location.search);
 }
+// Quem chegou por convite e nunca entrou aqui quer criar conta; o resto, entrar
+definirModo(conviteUrl && !jaEntrou.get() ? 'criar' : 'entrar');
+// Servidor com código de convite: mostra o campo ao criar conta
+fetch('/api/info').then((r) => r.json()).then((i) => { conviteNoServidor = !!i.convite; if (modoLogin === 'criar') mostrarConvite(conviteNoServidor); }).catch(() => {});
 // App desktop: trocar de servidor (hospedar aqui ou entrar no de um amigo)
 if (ponte()?.abrirConexao) {
   $('#trocarServidor').hidden = false;

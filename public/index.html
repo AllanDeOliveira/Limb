@@ -100,6 +100,8 @@
   #me .quem small { color: var(--mut); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #me .quem small.ok { color: var(--ok); }
   #me .av { width: 34px; height: 34px; font-size: 14px; }
+  #me .ib { width: 32px; height: 32px; }
+  #me .ib + .ib { margin-left: -8px; } /* até 4 botões: o nome ainda cabe */
 
   .av { border-radius: 50%; display: grid; place-items: center; font-weight: 700; color: #fff; flex: none; }
 
@@ -217,6 +219,26 @@
   .error { color: var(--err); font-size: 13px; min-height: 1em; }
   .error:empty { display: none; }
   .dica { color: var(--mut); font-size: 13px; margin: 0; }
+  #login .campo { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
+  #login .senha { position: relative; display: grid; }
+  #login .senha input { padding-right: 46px; }
+  #login .olho { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 36px; height: 36px; border: 0; border-radius: 6px; background: none; color: var(--mut); display: grid; place-items: center; }
+  #login .olho:hover { color: var(--txt); background: var(--bg3); }
+  .olho[aria-pressed="true"] .olho-on, .olho[aria-pressed="false"] .olho-off { display: none; }
+  .nota { margin: 0; font-size: 13px; color: var(--acc-texto); }
+  /* vazio continua na árvore de acessibilidade (role=status precisa existir antes do texto para ser anunciado);
+     fora do fluxo, não ocupa linha nem o gap do grid */
+  .nota:empty, .status:empty { position: absolute; }
+  #loginAviso { background: var(--acc-suave); border-radius: 8px; padding: 8px 10px; color: var(--txt); font-weight: 600; }
+  #loginAviso:empty { padding: 0; }
+  .regras { list-style: none; margin: -6px 0 0; padding: 0; display: grid; gap: 2px; font-size: 13px; color: var(--mut); }
+  .regras li::before { content: "○ "; content: "○ " / ""; }
+  .regras li.ok { color: var(--ok); }
+  .regras li.ok::before { content: "✓ "; content: "✓ " / "cumprida: "; }
+  .regras li.neutra::before { content: "· "; content: "· " / ""; }
+  #login .troca { margin: 0; text-align: center; font-size: 14px; color: var(--mut); }
+  #login .troca button.link { color: var(--acc-texto); text-decoration: none; font-weight: 600; padding: 0; }
+  #login .troca button.link:hover { text-decoration: underline; }
 
   /* ── Palco: assistir a tela de alguém (substitui o chat) ──────────────── */
   main.assistindo #messages, main.assistindo #composer, main.assistindo #typing { display: none; }
@@ -248,9 +270,30 @@
   #telaDlg .opcoes { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 14px; align-items: center; }
   #telaDlg select { background: var(--bg0); border: 1px solid var(--linha); border-radius: 6px; padding: 6px; margin-left: 6px; }
   #telaDlg[data-desktop] #telaOk { display: none; } /* no app desktop, clicar na fonte já compartilha */
+  #telaAvancado { margin-top: 12px; font-size: 14px; }
+  #telaAvancado summary { color: var(--mut); cursor: pointer; width: max-content; }
+  #telaAvancado label { display: block; margin-top: 8px; }
+  #telaEstimativa { margin-top: 12px; color: var(--acc-texto); }
   #pedir { width: min(440px, calc(100vw - 32px)); }
-  #audioDlg, #pessoaDlg { width: min(420px, calc(100vw - 32px)); }
+  #pessoaDlg { width: min(420px, calc(100vw - 32px)); }
+  #audioDlg { width: min(880px, calc(100vw - 32px)); }
   #servDlg { width: min(480px, calc(100vw - 32px)); }
+  #contaDlg { width: min(460px, calc(100vw - 32px)); }
+  #contaDlg h4 { margin: 14px 0 0; font-size: 12px; color: var(--mut); text-transform: uppercase; letter-spacing: .04em; }
+  #contaDlg h4:focus { outline: none; }
+  #contaDlg form + form h4 { margin: 22px 0 8px; }
+  #contaDlg form + form .dica { margin-bottom: 10px; }
+  #contaDlg input[type=password] { background: var(--bg0); border: 1px solid var(--linha); border-radius: 8px; padding: 9px 10px; font-weight: 400; }
+  #contaDlg input[type=password]:focus { border-color: var(--acc); outline: none; }
+  #contaDlg .acoes { display: flex; justify-content: flex-end; }
+  #contaDlg .acoes .ok { border: 0; border-radius: 8px; padding: 9px 16px; background: var(--acc); color: var(--acc-tinta); font-weight: 700; }
+  #contaDlg .acoes .ok:disabled { opacity: .6; }
+  #sairOutros:hover:not(:disabled) { background: var(--err); color: #fff; }
+  #sairOutros:disabled { opacity: .5; cursor: default; }
+  .status { margin: 0; font-size: 13px; color: var(--mut); }
+  .status.ok { color: var(--ok); } .status.erro { color: var(--err); }
+  .servlista .desconectar { border: 0; border-radius: 8px; padding: 7px 12px; background: var(--bg3); white-space: nowrap; }
+  .servlista .desconectar:hover:not(:disabled) { background: var(--err); color: #fff; }
   .servlista { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 6px; max-height: 40vh; overflow-y: auto; }
   .servlista .srv { display: flex; align-items: center; gap: 10px; background: var(--bg1); border: 1px solid var(--linha); border-radius: 10px; padding: 8px 8px 8px 12px; }
   .servlista .srv.atual { border-color: var(--acc); }
@@ -266,12 +309,43 @@
   #servConvite:focus { border-color: var(--acc); outline: none; }
   #servErro { margin: 8px 0 0; }
   .campos { display: grid; gap: 14px; }
+  /* item de grid não encolhe abaixo do conteúdo: sem isto, um nome de dispositivo comprido alarga o select e corta o diálogo */
+  .campos > *, .campos label, .campos fieldset > * { min-width: 0; }
   .campos label { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
-  .campos label.check { display: flex; align-items: center; gap: 8px; font-weight: 400; }
-  .campos select { background: var(--bg0); border: 1px solid var(--linha); border-radius: 8px; padding: 8px; font-weight: 400; }
+  .campos label.check { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; font-weight: 400; } /* dica que não cabe desce inteira, em vez de espremer o texto */
+  .campos select { background: var(--bg0); border: 1px solid var(--linha); border-radius: 8px; padding: 8px; font-weight: 400; width: 100%; text-overflow: ellipsis; }
+  /* Voz e áudio: voz | sons lado a lado no computador (cabe sem rolar); uma coluna em tela estreita */
+  #audioDlg .colunas { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 0 28px; }
+  #audioDlg .colunas > .campos { align-content: start; }
+  #audioDlg .colunas > .campos + .campos { border-left: 1px solid var(--linha); padding-left: 28px; }
+  #audioDlg .colunas .secao { border-top: 0; padding-top: 0; margin-top: 0; }
+  @media (max-width: 720px) {
+    #audioDlg .colunas { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+    #audioDlg .colunas > .campos + .campos { border-left: 0; padding-left: 0; border-top: 1px solid var(--linha); padding-top: 12px; }
+  }
   .campos .rotulo { display: flex; justify-content: space-between; }
   .campos .rotulo span:last-child { color: var(--acc-texto); font-variant-numeric: tabular-nums; }
   .campos input[type=range] { width: 100%; }
+  /* teste do microfone: barra em dB com a marca de onde a fala acende o anel verde */
+  .campo-mic { display: grid; gap: 8px; }
+  #micEmUso:empty { display: none; }
+  .teste-mic { display: flex; align-items: center; gap: 10px; }
+  .medidor { position: relative; flex: 1; height: 10px; border-radius: 5px; background: var(--bg0); border: 1px solid var(--linha); overflow: hidden; }
+  .medidor span { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--fraco); }
+  .medidor.fala span { background: var(--ok); }
+  .medidor i { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--txt); }
+  .teste-mic button { border: 0; border-radius: 8px; padding: 7px 12px; background: var(--bg3); white-space: nowrap; }
+  .teste-mic button:hover { background: var(--bg4); }
+  .teste-mic button.ativo { background: var(--acc); color: var(--acc-tinta); font-weight: 700; }
+  /* troca automática de microfone/saída: linha acima do painel de voz (fica no DOM para o leitor de tela anunciar) */
+  #vozAviso { margin: 0; padding: 8px 12px; background: var(--bg0); border-top: 1px solid var(--linha); font-size: 13px; color: var(--acc-texto); overflow-wrap: anywhere; }
+  #vozAviso:empty { padding: 0; border: 0; }
+  .campos fieldset { border: 0; margin: 0; padding: 0; min-width: 0; display: grid; gap: 14px; }
+  .campos fieldset.secao { border-top: 1px solid var(--linha); padding-top: 12px; margin-top: 2px; }
+  .campos legend { padding: 0 8px 0 0; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--mut); }
+  .campos fieldset:disabled { opacity: .5; }
+  .campos .testar { justify-self: start; border: 0; border-radius: 8px; padding: 7px 16px; background: var(--bg3); }
+  .campos .testar:hover:not(:disabled) { background: var(--bg4); }
   .vuser .vvol { color: var(--acc-texto); font-size: 11px; font-variant-numeric: tabular-nums; }
   #pedir label { display: grid; gap: 8px; font-weight: 600; }
   #pedir textarea { background: var(--bg0); border: 1px solid var(--linha); border-radius: 8px; padding: 10px; resize: vertical; font-weight: 400; }
@@ -320,21 +394,39 @@
   <form>
     <span class="marca"><span class="marca-ico"><svg class="ico" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3v18M8 15c0-4 3-6.5 8.5-7.5M16.5 7.5 14.5 4M16.5 7.5l3.5.5"/></svg></span>limb</span>
     <div>
-      <h2>Entrar</h2>
-      <p class="dica">Primeira vez aqui? Escolha um nome e uma senha: a conta é criada na hora.</p>
+      <h2 id="loginTitulo">Entrar</h2>
+      <p class="dica" id="loginDica">Que bom te ver de novo!</p>
     </div>
     <div class="onde"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zM4 14h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2zM6 6h.01M6 18h.01"/></svg><span>Servidor: <b id="ondeServidor"></b></span></div>
+    <p class="nota" id="loginAviso" role="status"></p>
     <label>Nome de usuário <input name="username" autocomplete="username" required minlength="2" maxlength="32" pattern="[a-zA-Z0-9_.]+" title="Letras, números, ponto e sublinhado"></label>
-    <label>Senha <input name="password" type="password" autocomplete="current-password" required minlength="6" maxlength="128"></label>
-    <label id="conviteCampo" hidden>Código de convite <small>só para criar conta</small><input name="invite" autocomplete="off" maxlength="100"></label>
-    <button class="principal">Entrar</button>
+    <div class="campo">
+      <label for="loginSenha">Senha</label>
+      <div class="senha">
+        <input id="loginSenha" name="password" type="password" autocomplete="current-password" required maxlength="128" aria-describedby="capsAviso">
+        <button type="button" class="olho" id="mostrarSenha" aria-pressed="false" aria-label="Mostrar senha" title="Mostrar senha">
+          <svg class="ico olho-on" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12zM12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0"/></svg>
+          <svg class="ico olho-off" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.9 4.2A9.1 9.1 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.2 3.2M6.6 6.6A17.4 17.4 0 0 0 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg>
+        </button>
+      </div>
+    </div>
+    <ul class="regras" id="regrasSenha" hidden>
+      <li id="regraTamanho">De 8 a 128 caracteres</li>
+      <li id="regraNome">Sem o seu nome de usuário</li>
+      <li class="neutra">Nada óbvio, como 12345678 ou senha123</li>
+    </ul>
+    <label id="confirmarCampo" hidden>Confirmar senha <input name="confirmar" type="password" autocomplete="new-password" maxlength="128" disabled></label>
+    <p class="nota" id="capsAviso" role="status"></p>
+    <label id="conviteCampo" hidden>Código de convite <small id="conviteDica">este servidor pede um código para criar conta</small><input name="invite" autocomplete="off" maxlength="100" disabled></label>
+    <button class="principal" id="loginBotao">Entrar</button>
     <div class="error" role="alert"></div>
+    <p class="troca"><span id="trocaTexto">Precisa de uma conta?</span> <button type="button" class="link" id="trocaModo">Registre-se</button></p>
     <button type="button" class="link" id="trocarServidor" hidden>Conectar a outro servidor…</button>
   </form>
 </div>
 <div id="app" hidden>
   <nav id="guilds" aria-label="Servidores"></nav>
-  <div id="side"><h2 id="guildName"></h2><div id="channels"></div><div id="voice" hidden></div><div id="me"></div></div>
+  <div id="side"><h2 id="guildName"></h2><div id="channels"></div><p id="vozAviso" role="status"></p><div id="voice" hidden></div><div id="me"></div></div>
   <main>
     <header>
       <button class="ib so-estreito" id="abrirNav" aria-label="Servidores e canais" title="Servidores e canais"><svg class="ico" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
@@ -402,14 +494,45 @@
 <dialog id="audioDlg" aria-labelledby="audioTitulo">
   <form method="dialog">
     <h3 id="audioTitulo">Voz e áudio</h3>
+    <div class="colunas">
     <div class="campos">
-      <label>Microfone <select name="entrada"></select></label>
+      <div class="campo-mic">
+        <label>Microfone <select name="entrada"></select></label>
+        <div class="teste-mic">
+          <div class="medidor" id="micNivel" role="meter" aria-label="Nível do microfone" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-describedby="micDica"><span></span><i></i></div>
+          <button type="button" id="micTestar">Testar microfone</button>
+        </div>
+        <small class="dica" id="micDica" hidden>Fale normalmente: passando da marca, a barra fica verde e você aparece falando para os outros.</small>
+        <small class="dica" id="micEmUso"></small>
+      </div>
       <label id="campoSaida">Saída de áudio <select name="saida"></select></label>
-      <p class="dica" id="semNomes">Os nomes dos dispositivos aparecem depois que você entra num canal de voz uma vez.</p>
+      <p class="dica" id="semNomes" hidden></p>
       <label><span class="rotulo"><span>Volume da chamada</span><span id="volGeralValor"></span></span>
         <input type="range" name="volumeGeral" min="0" max="1" step="0.05"></label>
+      <label>Qualidade da voz (envio) <select name="qualidadeVoz">
+        <option value="32">Econômica · 32 kbps</option>
+        <option value="64">Padrão · 64 kbps</option>
+        <option value="96">Alta · 96 kbps</option>
+        <option value="128">Máxima · 128 kbps</option>
+      </select></label>
       <label class="check"><input type="checkbox" name="ruido"> Supressão de ruído <small class="dica">(teclado, ventilador)</small></label>
       <label class="check"><input type="checkbox" name="eco"> Cancelamento de eco <small class="dica">(desligue se usar fone e a voz falhar)</small></label>
+    </div>
+    <div class="campos">
+      <fieldset class="secao">
+        <legend>Sons</legend>
+        <label class="check"><input type="checkbox" name="sons"> Tocar sons <small class="dica">(ao entrar, sair, desligar o microfone…)</small></label>
+        <fieldset id="sonsOpcoes">
+          <label><span class="rotulo"><span>Volume dos sons</span><span id="sonsVolValor"></span></span>
+            <input type="range" name="sonsVolume" min="0" max="1" step="0.05"></label>
+          <label class="check"><input type="checkbox" data-categoria="chamada"> Entrar e sair da chamada</label>
+          <label class="check"><input type="checkbox" data-categoria="audio"> Microfone e áudio <small class="dica">(desligar e ligar)</small></label>
+          <label class="check"><input type="checkbox" data-categoria="transmissao"> Transmissões</label>
+          <label class="check"><input type="checkbox" data-categoria="mencao"> Menções</label>
+          <button type="button" id="sonsTestar" class="testar">Testar</button>
+        </fieldset>
+      </fieldset>
+    </div>
     </div>
     <p class="dica" style="margin-top: 14px">Volume de uma pessoa só: clique no nome dela dentro do canal de voz.</p>
     <menu><button value="ok" class="ok">Pronto</button></menu>
@@ -426,14 +549,46 @@
     <menu><button type="button" id="pessoaPadrao">Voltar a 100%</button><button value="ok" class="ok">Pronto</button></menu>
   </form>
 </dialog>
+<dialog id="contaDlg" aria-labelledby="contaTitulo">
+  <h3 id="contaTitulo">Minha conta</h3>
+  <p class="dica">Conectado como <b id="contaNome"></b></p>
+  <!-- formulário próprio: Enter na senha altera a senha, em vez de fechar o diálogo -->
+  <form id="senhaForm" class="campos">
+    <h4>Alterar senha</h4>
+    <input type="text" name="username" autocomplete="username" hidden>
+    <label>Senha atual <input type="password" name="atual" autocomplete="current-password" maxlength="128"></label>
+    <label>Nova senha <input type="password" name="nova" autocomplete="new-password" required minlength="8" maxlength="128" aria-describedby="novaDica contaCaps"></label>
+    <label>Confirmar nova senha <input type="password" name="confirmar" autocomplete="new-password" required maxlength="128"></label>
+    <p class="dica" id="novaDica">De 8 a 128 caracteres, sem o seu nome de usuário e nada óbvio como 12345678. Os outros dispositivos são desconectados.</p>
+    <p class="nota" id="contaCaps" role="status"></p>
+    <div class="acoes"><button class="ok" id="senhaBotao">Alterar senha</button></div>
+    <p class="status" id="senhaStatus" role="status"></p>
+  </form>
+  <form method="dialog">
+    <h4 id="dispTitulo" tabindex="-1">Dispositivos conectados</h4>
+    <p class="dica">Onde a sua conta está aberta. Não reconhece algum? Desconecte e troque a senha.</p>
+    <ul class="servlista" id="dispositivos" aria-labelledby="dispTitulo"></ul>
+    <p class="status" id="dispStatus" role="status"></p>
+    <menu><button type="button" id="sairOutros">Sair de todos os outros dispositivos</button><button value="ok" class="ok">Pronto</button></menu>
+  </form>
+</dialog>
 <dialog id="telaDlg" aria-labelledby="telaTitulo">
   <form method="dialog">
     <h3 id="telaTitulo">Compartilhar tela</h3>
     <div id="telaFontes"></div>
     <div class="opcoes">
-      <label>Qualidade <select name="qualidade"></select></label>
+      <label>Resolução <select name="resolucao"></select></label>
+      <label>Taxa de quadros <select name="fps"></select></label>
+      <label>Otimizar para <select name="otimizar">
+        <option value="nitidez">Nitidez (texto, código)</option>
+        <option value="movimento">Movimento (jogos, vídeo)</option>
+      </select></label>
       <label id="telaAudioCampo"><input type="checkbox" name="audio"> Incluir o som do computador</label>
     </div>
+    <details id="telaAvancado"><summary>Avançado</summary>
+      <label>Codec de vídeo <select name="codec"></select></label>
+    </details>
+    <p class="dica" id="telaEstimativa" role="status"></p>
     <p class="dica" id="telaDica"></p>
     <menu><button value="cancel" formnovalidate>Cancelar</button><button value="ok" class="ok" id="telaOk">Escolher no navegador…</button></menu>
   </form>

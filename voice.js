@@ -8,11 +8,14 @@
 // stream WebRTC é a tela, para quem recebe separar o áudio da tela do microfone.
 // Diferença: o Discord manda a mídia para um SFU dele; aqui é WebRTC direto entre os participantes
 // (malha), e o servidor só repassa a sinalização no op 100 PEER_SIGNAL (extensão nossa).
+// Como no Discord, a tela só vai para quem está assistindo: o op 101 STREAM_WATCH (extensão nossa) diz
+// a quem transmite quem entrou/saiu; a sala recebe o op 12 de novo com viewer_ids (o "N assistindo").
 import { randomBytes, randomInt } from 'node:crypto';
 
 export const VOP = {
   IDENTIFY: 0, SELECT_PROTOCOL: 1, READY: 2, HEARTBEAT: 3, SESSION_DESCRIPTION: 4, SPEAKING: 5,
   HEARTBEAT_ACK: 6, HELLO: 8, CLIENTS_CONNECT: 11, VIDEO: 12, CLIENT_DISCONNECT: 13, PEER_SIGNAL: 100,
+  STREAM_WATCH: 101,
 };
 const HEARTBEAT = 13750;
 const TOKEN_TTL = 30_000;
@@ -21,11 +24,13 @@ const MAX_POR_SALA = 8; // ponytail: malha P2P = n² conexões; acima disso prec
 export function criarVoz({ broadcast, paraSessao, canalDeVoz, iceServers = [] }) {
   const estados = new Map(); // userId → voice state
   const tokens = new Map(); // token → { user_id, guild_id, channel_id, session_id, expira }
-  const salas = new Map(); // channelId → Map(userId → { ws, ssrc, video })
+  const salas = new Map(); // channelId → Map(userId → { ws, ssrc, video, espectadores: Set(userId) })
 
   const sala = (cid) => salas.get(cid) ?? salas.set(cid, new Map()).get(cid);
   const enviar = (ws, op, d) => { if (ws.readyState === 1) ws.send(JSON.stringify({ op, d })); };
   const naSala = (cid, op, d, exceto) => { for (const [uid, c] of salas.get(cid) ?? []) if (uid !== exceto) enviar(c.ws, op, d); };
+  // op 12 com a lista de quem assiste (vazia = ninguém); quem transmite já sabe pelo op 101
+  const avisarEspectadores = (cid, uid, m) => naSala(cid, VOP.VIDEO, { user_id: uid, stream_id: m.video, viewer_ids: [...m.espectadores] }, uid);
 
   function tirarDaSala(userId, code) {
     for (const [cid, membros] of salas) {
@@ -33,6 +38,12 @@ export function criarVoz({ broadcast, paraSessao, canalDeVoz, iceServers = [] })
       if (!c) continue;
       membros.delete(userId);
       if (!membros.size) salas.delete(cid);
+      // quem saiu deixa de assistir (a lista de quem transmitia sai junto com ele)
+      for (const [uid, m] of membros) {
+        if (!m.espectadores.delete(userId)) continue;
+        enviar(m.ws, VOP.STREAM_WATCH, { user_id: userId, watching: false });
+        avisarEspectadores(cid, uid, m);
+      }
       naSala(cid, VOP.CLIENT_DISCONNECT, { user_id: userId });
       if (code) c.ws.close(code, 'Disconnected');
     }
@@ -98,10 +109,12 @@ export function criarVoz({ broadcast, paraSessao, canalDeVoz, iceServers = [] })
         const membros = sala(t.channel_id);
         const outros = [...membros.keys()];
         eu = { user_id: t.user_id, channel_id: t.channel_id, ssrc: randomInt(1, 2 ** 31) };
-        membros.set(eu.user_id, { ws, ssrc: eu.ssrc });
+        membros.set(eu.user_id, { ws, ssrc: eu.ssrc, espectadores: new Set() });
         enviar(ws, VOP.READY, { ssrc: eu.ssrc, ip: '', port: 0, modes: ['webrtc-p2p'], heartbeat_interval: HEARTBEAT, ice_servers: iceServers });
-        // quem já está transmitindo: chega antes da conexão, para a tela ser reconhecida ao chegar
-        for (const [uid, m] of membros) if (m.video) enviar(ws, VOP.VIDEO, { user_id: uid, stream_id: m.video });
+        // quem já está transmitindo (e quem já assiste): chega antes da conexão, para a tela ser reconhecida ao chegar
+        for (const [uid, m] of membros) {
+          if (m.video) enviar(ws, VOP.VIDEO, { user_id: uid, stream_id: m.video, ...(m.espectadores.size && { viewer_ids: [...m.espectadores] }) });
+        }
         enviar(ws, VOP.CLIENTS_CONNECT, { user_ids: outros });
         naSala(eu.channel_id, VOP.CLIENTS_CONNECT, { user_ids: [eu.user_id] }, eu.user_id);
         return;
@@ -116,8 +129,18 @@ export function criarVoz({ broadcast, paraSessao, canalDeVoz, iceServers = [] })
       if (p.op === VOP.VIDEO) {
         const membro = salas.get(eu.channel_id)?.get(eu.user_id);
         const id = typeof d.stream_id === 'string' && /^[\w{}-]{1,64}$/.test(d.stream_id) ? d.stream_id : null;
-        if (membro) membro.video = id;
+        // stream novo no lugar de outro (trocou a qualidade): quem assiste continua; parou: ninguém assiste mais
+        if (membro) { membro.video = id; if (!id) membro.espectadores.clear(); }
         return naSala(eu.channel_id, VOP.VIDEO, { user_id: eu.user_id, stream_id: id }, eu.user_id);
+      }
+      if (p.op === VOP.STREAM_WATCH) {
+        const alvoId = String(d.user_id), quer = d.watching === true;
+        const alvo = salas.get(eu.channel_id)?.get(alvoId);
+        if (!alvo || alvoId === eu.user_id || (quer && !alvo.video)) return; // só quem está na sala e transmitindo
+        if (quer === alvo.espectadores.has(eu.user_id)) return; // repetido: não faz renegociar à toa
+        quer ? alvo.espectadores.add(eu.user_id) : alvo.espectadores.delete(eu.user_id);
+        enviar(alvo.ws, VOP.STREAM_WATCH, { user_id: eu.user_id, watching: quer }); // id carimbado pelo servidor
+        return avisarEspectadores(eu.channel_id, alvoId, alvo);
       }
       if (p.op === VOP.PEER_SIGNAL) {
         const alvo = salas.get(eu.channel_id)?.get(String(d.to));

@@ -7,3 +7,6 @@ dist/
 
 # Anotações de estudo locais (trechos de software de terceiros): não publicar
 EVIDENCIAS.md
+
+# Pastas de trabalho do Claude Code (worktrees temporários)
+.claude/

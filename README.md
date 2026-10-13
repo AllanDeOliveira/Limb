@@ -13,10 +13,21 @@ empresa: o servidor roda no computador de um de vocês (ou numa VPS), e os dados
   reações, edição, @menções e contador de não lidas
 - **Busca** no estilo do Discord: `from:ana has:link before:2026-10-01 in:geral palavra`
 - **Voz** com indicador de quem está falando, mudo, surdo, volume de cada pessoa (até 200%), volume geral,
-  escolha de microfone e saída, supressão de ruído e cancelamento de eco
-- **Compartilhar tela** (720p30, 1080p30 ou 1080p60), com o som do computador no Windows
+  qualidade da voz (32 a 128 kbps), supressão de ruído e cancelamento de eco
+- **Microfone automático**, como no Discord: se o escolhido está ocupado ou é desconectado no meio da
+  chamada, o Limb passa para outro (o do notebook) sem sair da chamada e volta quando ele reaparece; no
+  "Padrão do sistema", segue o padrão do Windows. Em **Voz e áudio**, **Testar microfone** mostra o volume
+  da sua voz e a marca a partir da qual os outros veem você falando
+- **Sons da chamada** (entrar, sair, alguém entrou ou saiu, mudo, surdo, transmissão, menção, queda),
+  gerados pelo próprio app, com volume e categorias em **Voz e áudio → Sons**
+- **Compartilhar tela** como o "Go Live": 480p a 1440p ou Original, 15/30/60 fps, otimizar para nitidez
+  (texto) ou movimento (jogos) e codec (H.264, VP9, AV1) em Avançado; o som do computador vai junto no
+  Windows. A tela só é enviada para quem clica em **AO VIVO**, e o painel mostra quantos estão assistindo
 - **App para Windows** com notificações de menção e o servidor embutido; também funciona no navegador
-- **Contas com senha** e código de convite opcional
+- **Contas** com **Entrar** e **Criar conta** separados, código de convite opcional e uma sessão por
+  aparelho (vale 30 dias sem uso). Em **Minha conta** (ícone de pessoa ao lado do seu nome) dá para trocar a
+  senha, ver os dispositivos conectados e desconectar qualquer um. Senhas novas: 8 a 128 caracteres, sem o
+  nome de usuário e nada óbvio; 5 senhas erradas seguidas travam a conta por 1 minuto (dobrando até 15)
 
 ## Instalar (Windows)
 
@@ -37,7 +48,7 @@ O Windows pode mostrar um aviso do SmartScreen, porque o executável não tem as
 clique em **Mais informações → Executar assim mesmo**.
 
 Ao abrir pela primeira vez, o app pergunta se você vai **hospedar** ou **entrar** no servidor de um amigo
-(veja [Jogar com os amigos](#jogar-com-os-amigos)). A conta é criada no primeiro login, com nome e senha.
+(veja [Jogar com os amigos](#jogar-com-os-amigos)). Depois, em **Criar conta**, escolha um nome e uma senha.
 
 ## Atualizar
 
@@ -89,7 +100,8 @@ servidor…** no login: aparecem os servidores em que você já entrou, com a bo
 Limb avisa no topo da janela, porque ninguém de fora consegue entrar.
 
 Sem microfone (ou com ele bloqueado no Windows), você entra na chamada só ouvindo; ao conectar um microfone,
-clique no botão do microfone.
+o Limb liga sozinho (bloqueado no Windows: libere e clique no botão do microfone). No navegador, os sons
+só tocam depois do primeiro clique na página (regra do navegador); no app desktop, desde o início.
 
 ### Como os amigos alcançam o seu computador
 
@@ -141,9 +153,9 @@ No app, cada amigo entra em `https://chat.seudominio.com`. Pelo navegador també
 | `PORT` | `3000` | Porta HTTP |
 | `HOST` | todas as interfaces | `127.0.0.1` para aceitar só o proxy local |
 | `DB_FILE` | `limb.db` | Arquivo do banco (SQLite) |
-| `INVITE_CODE` | vazio | Se definido, só cria conta quem tiver o código |
+| `INVITE_CODE` | vazio | Se definido, só cria conta quem tiver o código (e conta antiga sem senha só define a senha com ele) |
 | `ICE_SERVERS` | STUN do Google | Lista JSON de servidores STUN/TURN |
-| `TRUST_PROXY` | vazio | `1` atrás de proxy, para o limite de tentativas de login usar o IP real |
+| `TRUST_PROXY` | vazio | `1` atrás de proxy, para os limites de tentativas de login e de cadastros usarem o IP real (o último do `X-Forwarded-For`, o que o proxy acrescenta; com HOST=127.0.0.1 ninguém fala direto com o servidor) |
 
 No app desktop, as mesmas opções ficam em `%APPDATA%\Limb\settings.json` (`porta`,
 `compartilharNaRede`, `codigoConvite`, `iceServers`, `endpoint`).
@@ -152,8 +164,10 @@ No app desktop, as mesmas opções ficam em `%APPDATA%\Limb\settings.json` (`por
 
 - **Até 8 pessoas por canal de voz.** A mídia vai direto entre todos (malha): cada um envia uma cópia do
   áudio para cada outra pessoa. Para chamadas maiores seria preciso um servidor de mídia (SFU).
-- **Compartilhar tela usa a sua internet de upload** para cada pessoa que assiste. Em 1080p60, conte uns
-  7 Mbit/s por pessoa; com upload fraco, use 720p.
+- **Compartilhar tela usa a sua internet de upload** para cada pessoa que assiste (só quem clicou em
+  AO VIVO). Por pessoa: 1080p30 ≈ 4,5 Mbit/s, 1080p60 ≈ 7, 1440p60 ≈ 12 (o diálogo mostra a estimativa);
+  com upload fraco, use 720p ou 15/30 fps.
+- **Os limites de tentativas de login ficam na memória** e zeram quando o servidor reinicia.
 - **"Incluir o som do computador"** captura tudo que toca, inclusive a voz da chamada: use fone de ouvido.
   Só existe no Windows (app) e no Chrome (aba ou tela).
 - **Mensagens não são criptografadas de ponta a ponta.** Quem hospeda tem acesso ao banco.
@@ -165,10 +179,12 @@ No app desktop, as mesmas opções ficam em `%APPDATA%\Limb\settings.json` (`por
 | Parte | Arquivo |
 |---|---|
 | API REST e Gateway (WebSocket com opcodes no estilo do Discord, RESUME, ETF ou JSON) | [server.js](server.js) |
-| Gateway de voz e sinalização WebRTC | [voice.js](voice.js) |
+| Gateway de voz, sinalização WebRTC e quem assiste cada tela (op 101) | [voice.js](voice.js) |
 | Snowflakes e busca | [lib.js](lib.js) |
 | Interface (stores no estilo Flux, sem framework) | [public/app.js](public/app.js) |
 | Voz e compartilhamento de tela no cliente | [public/voz.js](public/voz.js) |
+| Troca automática de microfone e saída | [public/dispositivos.js](public/dispositivos.js) |
+| Sons da chamada (WebAudio) | [public/sons.js](public/sons.js) |
 | Codificador ETF (compatível com o [erlpack](https://github.com/discord/erlpack)) | [public/etf.js](public/etf.js) |
 | App desktop (Electron), Tailscale e atualização automática | [desktop/](desktop/) |
 

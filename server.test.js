@@ -20,7 +20,9 @@ function subir(env = {}) {
 }
 before(async () => { B = await subir({ ICE_SERVERS: '[{"urls":"stun:exemplo:3478"}]' }); });
 after(async () => {
-  await Promise.all(outros.map((p) => { const saiu = new Promise((r) => p.once('exit', r)); p.kill(); return saiu; }));
+  // quem já saiu (o teste do banco antigo reinicia um servidor) não emite mais "exit"
+  await Promise.all(outros.filter((p) => p.exitCode === null && p.signalCode === null)
+    .map((p) => { const saiu = new Promise((r) => p.once('exit', r)); p.kill(); return saiu; }));
   rmSync(dir, { recursive: true, force: true }); // Windows não apaga o banco enquanto o processo o mantém aberto
 });
 
@@ -31,30 +33,40 @@ const api = async (m, p, body, token, base = B) => {
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Cliente mínimo de gateway: guarda tudo que chega
-function conectar(primeiro) {
+function conectar(primeiro, base = B) {
   return new Promise((res) => {
-    const ws = new WebSocket(B.replace('http', 'ws') + '/gateway');
+    const ws = new WebSocket(base.replace('http', 'ws') + '/gateway');
     const ev = [];
+    const fechou = new Promise((r) => { ws.onclose = (e) => { ev.push({ closed: e.code }); r(e.code); }; });
     ws.onmessage = (e) => {
       const p = JSON.parse(e.data);
       ev.push(p);
       if (p.op === 10) ws.send(JSON.stringify(primeiro));
-      if (p.t === 'READY' || p.t === 'RESUMED' || p.op === 9) res({ ws, ev, last: () => ev.filter((x) => x.op === 0).at(-1)?.s ?? 0 });
+      if (p.t === 'READY' || p.t === 'RESUMED' || p.op === 9) res({ ws, ev, fechou, last: () => ev.filter((x) => x.op === 0).at(-1)?.s ?? 0 });
     };
+    fechou.then(() => res({ ws, ev, fechou })); // fechou antes do READY (ex.: 4004)
   });
 }
-const identify = (token) => conectar({ op: 2, d: { token } });
+const identify = (token, base) => conectar({ op: 2, d: { token } }, base);
+const SENHA_ANA = 'pao-de-queijo-7', SENHA_BIA = 'cafe-com-leite-9';
 
 test('fluxo completo', async (t) => {
-  const [s1, a] = await api('POST', '/login', { username: 'Ana', password: 'senha-ana' });
-  assert.equal(s1, 200); assert.equal(a.user.username, 'ana');
-  assert.equal((await api('POST', '/login', { username: 'x', password: 'senha-ana' }))[0], 400);
-  assert.equal((await api('POST', '/login', { username: 'nova', password: '123' }))[0], 400); // senha curta
-  const [s2, a2] = await api('POST', '/login', { username: 'ana', password: 'senha-ana' });
-  assert.equal(s2, 200); assert.equal(a2.token, a.token); // mesma conta
-  assert.equal((await api('POST', '/login', { username: 'ana', password: 'errada!' }))[0], 401);
+  const [s1, a] = await api('POST', '/register', { username: 'Ana', password: SENHA_ANA });
+  assert.equal(s1, 200); assert.equal(a.user.username, 'ana'); assert.match(a.token, /^[\w-]{43}$/);
+  assert.equal((await api('POST', '/register', { username: 'ana', password: 'outra-senha-boa' }))[0], 409);
+  assert.equal((await api('POST', '/login', { username: 'x', password: SENHA_ANA }))[0], 400);
+  assert.equal((await api('POST', '/register', { username: 'nova', password: '123' }))[0], 400); // senha curta
+  assert.equal((await api('POST', '/register', { username: 'nova', password: '12345678' }))[0], 400); // senha comum
+  assert.equal((await api('POST', '/register', { username: 'nova', password: 'xx-NOVA-xx' }))[0], 400); // contém o nome
+  // login não cria conta: nome desconhecido dá o mesmo erro que senha errada
+  const [s0, ninguem] = await api('POST', '/login', { username: 'ninguem', password: SENHA_ANA });
+  assert.equal(s0, 401);
+  const [s2, a2] = await api('POST', '/login', { username: 'ana', password: SENHA_ANA });
+  assert.equal(s2, 200); assert.equal(a2.user.id, a.user.id); assert.notEqual(a2.token, a.token); // mesma conta, outro dispositivo
+  const [s3, errada] = await api('POST', '/login', { username: 'ana', password: 'errada!' });
+  assert.equal(s3, 401); assert.equal(errada.message, ninguem.message);
   assert.deepEqual((await api('GET', '/info'))[1], { convite: false });
-  const [, b] = await api('POST', '/login', { username: 'bia', password: 'senha-bia' });
+  const [, b] = await api('POST', '/register', { username: 'bia', password: SENHA_BIA });
 
   const A = await identify(a.token), Bc = await identify(b.token);
   const ready = A.ev.find((p) => p.t === 'READY').d;
@@ -252,13 +264,15 @@ test('fluxo completo', async (t) => {
     VA.ws.close(); B2.ws.close(1000);
   });
 
-  await t.test('código de convite: conta nova só com o código; conta existente não precisa', async () => {
+  await t.test('código de convite: conta nova só com o código; entrar não precisa', async () => {
     const C = await subir({ INVITE_CODE: 'amigos' });
     assert.deepEqual((await api('GET', '/info', null, null, C))[1], { convite: true });
-    assert.equal((await api('POST', '/login', { username: 'zé', password: 'segredo1' }, null, C))[0], 400);
-    assert.equal((await api('POST', '/login', { username: 'ze', password: 'segredo1' }, null, C))[0], 403);
-    assert.equal((await api('POST', '/login', { username: 'ze', password: 'segredo1', invite: 'amigos' }, null, C))[0], 200);
-    assert.equal((await api('POST', '/login', { username: 'ze', password: 'segredo1' }, null, C))[0], 200);
+    const conta = { username: 'ze', password: 'segredo-123x' };
+    assert.equal((await api('POST', '/register', { ...conta, username: 'zé' }, null, C))[0], 400);
+    assert.equal((await api('POST', '/register', conta, null, C))[0], 403);
+    assert.equal((await api('POST', '/register', { ...conta, invite: 'errado' }, null, C))[0], 403);
+    assert.equal((await api('POST', '/register', { ...conta, invite: 'amigos' }, null, C))[0], 200);
+    assert.equal((await api('POST', '/login', conta, null, C))[0], 200);
   });
 
   await t.test('saída intencional (1000) deixa offline na hora; token ruim fecha 4004', async () => {
@@ -266,12 +280,145 @@ test('fluxo completo', async (t) => {
     Bc.ws.close(1000);
     await wait(150);
     assert.ok(C.ev.some((p) => p.t === 'PRESENCE_UPDATE' && p.d.user.username === 'bia' && p.d.status === 'offline'));
-    const code = await new Promise((res) => {
-      const ws = new WebSocket(B.replace('http', 'ws') + '/gateway');
-      ws.onmessage = (e) => { if (JSON.parse(e.data).op === 10) ws.send(JSON.stringify({ op: 2, d: { token: 'nope' } })); };
-      ws.onclose = (e) => res(e.code);
-    });
-    assert.equal(code, 4004);
+    assert.equal(await (await identify('nope')).fechou, 4004);
     C.ws.close(1000);
   });
+
+  await t.test('sair: revoga só este dispositivo e derruba o gateway dele com 4004', async () => {
+    const [, a3] = await api('POST', '/login', { username: 'ana', password: SENHA_ANA });
+    const G = await identify(a3.token);
+    // outra aba com o mesmo token caiu e espera um RESUME
+    const H = await identify(a3.token);
+    const sid = H.ev.find((p) => p.t === 'READY').d.session_id, seq = H.last();
+    H.ws.close(4000);
+    await wait(100);
+    assert.equal((await api('POST', '/logout', null, a3.token))[0], 204);
+    assert.equal(await G.fechou, 4004);
+    assert.equal((await api('GET', `/channels/${ch.id}/messages`, null, a3.token))[0], 401);
+    assert.equal(await (await identify(a3.token)).fechou, 4004);
+    const R = await conectar({ op: 6, d: { token: a3.token, session_id: sid, seq } });
+    assert.ok(R.ev.some((p) => p.op === 9)); // token revogado não retoma
+    R.ws.close();
+    assert.equal((await api('GET', `/channels/${ch.id}/messages`, null, a.token))[0], 200); // os outros dispositivos da ana seguem
+    assert.equal((await api('POST', '/logout', null, a3.token))[0], 401);
+  });
+
+  await t.test('trocar a senha desconecta os outros dispositivos (este continua)', async () => {
+    const [, c1] = await api('POST', '/register', { username: 'caio', password: 'arroz-e-feijao-3' });
+    const [, c2] = await api('POST', '/login', { username: 'caio', password: 'arroz-e-feijao-3' });
+    const G = await identify(c2.token);
+    const troca = (corpo) => api('POST', '/users/@me/password', corpo, c1.token);
+    assert.equal((await troca({ senha_atual: 'errada-123', senha_nova: 'batata-frita-44' }))[0], 403);
+    assert.equal((await troca({ senha_atual: 'arroz-e-feijao-3', senha_nova: 'caio1234' }))[0], 400); // contém o nome
+    assert.equal(G.ws.readyState, 1); // tentativas que falham não derrubam ninguém
+    assert.equal((await troca({ senha_atual: 'arroz-e-feijao-3', senha_nova: 'batata-frita-44' }))[0], 204);
+    assert.equal(await G.fechou, 4004);
+    assert.equal((await api('GET', '/users/@me/sessions', null, c2.token))[0], 401);
+    assert.equal((await api('GET', '/users/@me/sessions', null, c1.token))[0], 200);
+    assert.equal((await api('POST', '/login', { username: 'caio', password: 'arroz-e-feijao-3' }))[0], 401);
+    assert.equal((await api('POST', '/login', { username: 'caio', password: 'batata-frita-44' }))[0], 200);
+  });
+
+  await t.test('dispositivos: lista, desconecta um, encerra os outros; nunca os de outra pessoa', async () => {
+    // entrar pelo app desktop: o aparelho aparece com nome na lista
+    const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) limb/1.6.1 Chrome/140.0.0.0 Electron/44.7.1 Safari/537.36';
+    const r = await fetch(`${B}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': UA }, body: JSON.stringify({ username: 'ana', password: SENHA_ANA }) });
+    assert.equal(r.headers.get('cache-control'), 'no-store'); // resposta com token
+    const app = await r.json();
+    const [s, lista] = await api('GET', '/users/@me/sessions', null, a.token);
+    assert.equal(s, 200);
+    assert.deepEqual(Object.keys(lista[0]).sort(), ['atual', 'criado', 'dispositivo', 'id', 'usado']); // nada de hash de token
+    assert.equal(lista.filter((x) => x.atual).length, 1);
+    const [, daApp] = await api('GET', '/users/@me/sessions', null, app.token);
+    const sessaoApp = daApp.find((x) => x.atual);
+    assert.equal(sessaoApp.dispositivo, 'App Limb · Windows');
+    assert.match(sessaoApp.id, /^\d+$/);
+    assert.ok(lista.some((x) => x.id === sessaoApp.id));
+    const [, daBia] = await api('GET', '/users/@me/sessions', null, b.token);
+    assert.ok(!daBia.some((x) => x.id === sessaoApp.id)); // só as da própria conta
+    assert.equal((await api('DELETE', `/users/@me/sessions/${daBia.find((x) => x.atual).id}`, null, a.token))[0], 404); // não é dela
+    assert.equal((await api('GET', '/users/@me/sessions', null, b.token))[0], 200);
+    assert.equal((await api('DELETE', `/users/@me/sessions/${sessaoApp.id}`, null, a.token))[0], 204);
+    assert.equal((await api('GET', '/users/@me/sessions', null, app.token))[0], 401);
+    assert.equal((await api('GET', '/users/@me/sessions', null, a2.token))[0], 200);
+    assert.equal((await api('POST', '/users/@me/sessions/encerrar-outras', null, a.token))[0], 204);
+    assert.equal((await api('GET', '/users/@me/sessions', null, a2.token))[0], 401);
+    const [, so] = await api('GET', '/users/@me/sessions', null, a.token);
+    assert.deepEqual(so.map((x) => x.atual), [true]);
+  });
+});
+
+test('limite por conta: 5 erros seguidos travam a conta, até para a senha certa (429)', async () => {
+  const D = await subir();
+  assert.equal((await api('POST', '/register', { username: 'duda', password: 'goiabada-cascao' }, null, D))[0], 200);
+  for (let i = 0; i < 5; i++) assert.equal((await api('POST', '/login', { username: 'duda', password: `errada-${i}` }, null, D))[0], 401);
+  const [s, r] = await api('POST', '/login', { username: 'duda', password: 'goiabada-cascao' }, null, D);
+  assert.equal(s, 429);
+  assert.match(r.message, /Tente de novo em \d+ s\./);
+  assert.ok(r.retry_after > 0 && r.retry_after <= 60);
+  // outra conta, mesmo IP: entra normalmente
+  assert.equal((await api('POST', '/register', { username: 'edu', password: 'doce-de-leite' }, null, D))[0], 200);
+  assert.equal((await api('POST', '/login', { username: 'edu', password: 'doce-de-leite' }, null, D))[0], 200);
+});
+
+test('cadastro com nome ocupado conta como erro do IP; atrás de proxy, o IP é o último do X-Forwarded-For', async () => {
+  const P = await subir({ TRUST_PROXY: '1' });
+  const cadastrar = (xff, username = 'gabi') => fetch(`${P}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': xff },
+    body: JSON.stringify({ username, password: 'quindim-de-coco' }) }).then((r) => r.status);
+  assert.equal(await cadastrar('10.0.0.5'), 200);
+  // o cliente inventa o primeiro endereço a cada pedido; o proxy acrescenta o de verdade no fim
+  for (let i = 0; i < 10; i++) assert.equal(await cadastrar(`1.2.3.${i}, 10.0.0.5`), 409);
+  assert.equal(await cadastrar('9.9.9.9, 10.0.0.5', 'outro.nome'), 429);
+  assert.equal(await cadastrar('10.0.0.6'), 409); // outro IP segue livre
+});
+
+test('banco antigo: token e senha de antes continuam valendo; conta sem senha pede o convite', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const { randomBytes, scryptSync } = await import('node:crypto');
+  const arq = path.join(dir, 'antigo.sqlite');
+  // esquema e formatos da versão anterior: token fixo em texto puro, senha 'sal:hash' com o scrypt padrão do Node
+  const velho = new DatabaseSync(arq);
+  velho.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, token TEXT UNIQUE NOT NULL, senha TEXT)');
+  const sal = randomBytes(16);
+  const inserir = velho.prepare('INSERT INTO users VALUES (?, ?, ?, ?)');
+  inserir.run(1000n << 22n, 'velho', 'token-antigo', `${sal.toString('hex')}:${scryptSync('senha6', sal, 32).toString('hex')}`);
+  inserir.run(1001n << 22n, 'semsenha', 'token-sem-senha', null);
+  velho.close();
+
+  const V = await subir({ DB_FILE: arq, INVITE_CODE: 'amigos' });
+  const G = await identify('token-antigo', V);
+  assert.equal(G.ev.find((p) => p.t === 'READY')?.d.user.username, 'velho'); // ninguém precisa entrar de novo
+  G.ws.close(1000);
+  const [s, sessoes] = await api('GET', '/users/@me/sessions', null, 'token-antigo', V);
+  assert.equal(s, 200);
+  assert.equal(sessoes[0].dispositivo, 'Sessão anterior');
+  const [s1, novo] = await api('POST', '/login', { username: 'velho', password: 'senha6' }, null, V); // senha de 6 ainda entra
+  assert.equal(s1, 200);
+  assert.notEqual(novo.token, 'token-antigo');
+
+  // no banco: hash da senha refeito no formato novo; o token de verdade não fica em lugar nenhum
+  const leitura = new DatabaseSync(arq, { readOnly: true });
+  const linha = leitura.prepare("SELECT senha, token FROM users WHERE name = 'velho'").get();
+  const hashes = leitura.prepare('SELECT token_hash FROM sessions').all().map((x) => x.token_hash);
+  leitura.close();
+  assert.match(linha.senha, /^scrypt\$32768\$8\$1\$[0-9a-f]{32}\$[0-9a-f]{64}$/);
+  assert.notEqual(linha.token, 'token-antigo');
+  assert.ok(hashes.length >= 3 && hashes.every((x) => /^[0-9a-f]{64}$/.test(x)));
+  assert.equal((await api('POST', '/login', { username: 'velho', password: 'senha6' }, null, V))[0], 200);
+  assert.equal((await api('POST', '/login', { username: 'velho', password: 'senha7' }, null, V))[0], 401);
+
+  // conta sem senha: com convite no servidor, só reivindica quem tem o código
+  const [s2, r2] = await api('POST', '/login', { username: 'semsenha', password: 'nova-senha-boa' }, null, V);
+  assert.equal(s2, 403);
+  assert.equal(r2.convite, true);
+  assert.equal((await api('POST', '/login', { username: 'semsenha', password: 'nova-senha-boa', invite: 'amigos' }, null, V))[0], 200);
+  assert.equal((await api('POST', '/login', { username: 'semsenha', password: 'nova-senha-boa' }, null, V))[0], 200);
+
+  // reiniciar não roda a migração de novo: o token antigo segue valendo
+  const p = outros.at(-1);
+  await new Promise((r) => { p.once('exit', r); p.kill(); });
+  const V2 = await subir({ DB_FILE: arq, INVITE_CODE: 'amigos' });
+  assert.equal((await api('GET', '/users/@me/sessions', null, 'token-antigo', V2))[0], 200);
+  assert.equal((await api('GET', '/users/@me/sessions', null, 'token-sem-senha', V2))[0], 200);
+  assert.equal((await api('POST', '/login', { username: 'velho', password: 'senha6' }, null, V2))[0], 200);
 });

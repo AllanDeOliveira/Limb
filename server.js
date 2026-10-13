@@ -22,6 +22,8 @@ const HEARTBEAT_INTERVAL = 41250; // valor que o gateway real anuncia no HELLO
 const RESUME_WINDOW = Number(process.env.RESUME_WINDOW_MS) || 45_000; // sessão sem socket espera isso por um RESUME
 const REPLAY_MAX = 1000; // eventos guardados por sessão para reenviar no RESUME
 const MAX_REACOES = 20; // emojis distintos por mensagem (limite do Discord)
+const SESSAO_TTL = 30 * 86_400_000; // sessão de login expira depois de 30 dias sem uso
+const MAX_SESSOES = 50; // por conta: logins além disso derrubam os mais antigos
 
 // ── Banco ───────────────────────────────────────────────────────────────────
 // ids são snowflakes (INTEGER 64 bits) → readBigInts, e viram string no JSON, como na API do Discord
@@ -44,15 +46,33 @@ db.exec(`
     user_id INTEGER NOT NULL, channel_id INTEGER NOT NULL,
     last_message_id INTEGER NOT NULL DEFAULT 0, mention_count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, channel_id));
+  CREATE TABLE IF NOT EXISTS sessions (
+    id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), token_hash TEXT UNIQUE NOT NULL,
+    criado INTEGER NOT NULL, usado INTEGER NOT NULL, expira INTEGER NOT NULL, dispositivo TEXT NOT NULL DEFAULT '', ip TEXT);
+  CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 `);
 // Bancos criados pela versão anterior não têm estas colunas
 const colunas = db.prepare("SELECT name FROM pragma_table_info('messages')").all().map((c) => c.name);
 if (!colunas.includes('reply_to')) db.exec('ALTER TABLE messages ADD COLUMN reply_to INTEGER');
 if (!colunas.includes('mentions')) db.exec("ALTER TABLE messages ADD COLUMN mentions TEXT NOT NULL DEFAULT '[]'");
-// senha: 'sal:hash' (scrypt). null = conta antiga, do tempo em que só o nome bastava
+// senha: 'scrypt$N$r$p$sal$hash' (antes: 'sal:hash'). null = conta antiga, do tempo em que só o nome bastava
 if (!db.prepare("SELECT name FROM pragma_table_info('users')").all().some((c) => c.name === 'senha')) db.exec('ALTER TABLE users ADD COLUMN senha TEXT');
 
 const q = (sql) => db.prepare(sql);
+// v1: o token fixo de cada conta (users.token) vira a primeira sessão dela, para ninguém precisar entrar
+// de novo; a coluna fica com um valor aleatório que nunca é devolvido nem aceito (é NOT NULL UNIQUE)
+if (Number(q('PRAGMA user_version').get().user_version) < 1) {
+  db.exec('BEGIN');
+  try {
+    const agora = Date.now();
+    for (const u of q('SELECT id, token FROM users').all()) {
+      q(`INSERT OR IGNORE INTO sessions (id, user_id, token_hash, criado, usado, expira, dispositivo) VALUES (?, ?, ?, ?, ?, ?, 'Sessão anterior')`)
+        .run(snowflake(), u.id, hashToken(u.token), agora, agora, agora + SESSAO_TTL);
+      q('UPDATE users SET token = ? WHERE id = ?').run(tokenAleatorio(), u.id);
+    }
+    db.exec('PRAGMA user_version = 1; COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
 if (!q("SELECT name FROM pragma_table_info('channels')").all().some((c) => c.name === 'type')) {
   db.exec('ALTER TABLE channels ADD COLUMN type INTEGER NOT NULL DEFAULT 0');
   // servidores que já existiam ganham um canal de voz, como os novos
@@ -118,7 +138,7 @@ const nomeCanal = (s) => String(s ?? '').trim().toLowerCase().replace(/\s+/g, '-
 
 // ── Gateway ─────────────────────────────────────────────────────────────────
 // Sessão sobrevive ao socket: guarda seq e os últimos eventos para o RESUME.
-const sessions = new Map(); // session_id → { id, user, seq, ws, buffer, expira }
+const sessions = new Map(); // session_id → { id, user, auth, seq, ws, buffer, expira }; auth = id da sessão de login
 const online = () => [...new Set([...sessions.values()].map((s) => s.user.id))];
 
 // Cada socket escolhe o formato na URL (?encoding=json|etf), como no gateway do Discord.
@@ -181,6 +201,7 @@ function gateway(ws, req) {
     try { p = ws.etf ? unpack(raw) : JSON.parse(raw); } catch { return ws.close(4002, 'Decode error'); }
     if (p.op === OP.HEARTBEAT) { vigiar(); return send({ ws }, { op: OP.HEARTBEAT_ACK }); }
     if (s) {
+      if (s.ws !== ws) return; // sessão revogada (ou retomada noutro socket): este já está fechando
       if (p.op === OP.VOICE_STATE_UPDATE) {
         const erro = voz.atualizarEstado(s, p.d);
         if (erro) dispatch(s, 'VOICE_STATE_ERROR', { message: erro }); // ponytail: o Discord só ignora
@@ -189,10 +210,11 @@ function gateway(ws, req) {
     }
 
     if (p.op === OP.IDENTIFY) {
-      const user = userByToken(p.d?.token);
-      if (!user) return ws.close(4004, 'Authentication failed');
+      const auth = autenticar(p.d?.token);
+      if (!auth) return ws.close(4004, 'Authentication failed');
+      const { user } = auth;
       const jaOnline = online().includes(user.id);
-      s = { id: randomBytes(16).toString('hex'), user, seq: 0, ws, buffer: [], expira: null };
+      s = { id: randomBytes(16).toString('hex'), user, auth: auth.sessao, seq: 0, ws, buffer: [], expira: null };
       sessions.set(s.id, s);
       dispatch(s, 'READY', readyPayload(s));
       if (!jaOnline) presence(user, 'online');
@@ -201,12 +223,12 @@ function gateway(ws, req) {
 
     if (p.op === OP.RESUME) {
       const old = sessions.get(String(p.d?.session_id));
-      const user = userByToken(p.d?.token);
+      const auth = autenticar(p.d?.token);
       const seq = Number(p.d?.seq);
       const perdidos = old?.buffer.filter((e) => e.s > seq) ?? [];
-      // Só retoma se é o dono, a sessão está sem socket e o buffer cobre tudo depois de `seq`
+      // Só retoma com o mesmo login (token revogado ou expirado não volta), a sessão sem socket e o buffer cobrindo tudo depois de `seq`
       const cobre = old && seq <= old.seq && (perdidos.length ? perdidos[0].s === seq + 1 : seq === old.seq);
-      if (!old || !user || user.id !== old.user.id || old.ws || !cobre) {
+      if (!old || !auth || auth.sessao !== old.auth || old.ws || !cobre) {
         return send({ ws }, { op: OP.INVALID_SESSION, d: false }); // cliente faz IDENTIFY de novo
       }
       clearTimeout(old.expira);
@@ -231,11 +253,7 @@ function gateway(ws, req) {
 
 // ── REST ────────────────────────────────────────────────────────────────────
 const json = (v) => JSON.stringify(v, (_, x) => (typeof x === 'bigint' ? String(x) : x));
-function userByToken(token) {
-  const u = token && q('SELECT id, name FROM users WHERE token = ?').get(String(token));
-  return u && { id: u.id, username: u.name };
-}
-class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
+class HttpError extends Error { constructor(status, msg, extra) { super(msg); this.status = status; this.extra = extra; } }
 const id64 = (v) => { if (!/^\d{1,20}$/.test(v ?? '')) throw new HttpError(400, 'id inválido'); return BigInt(v); };
 const conteudo = (v) => {
   const c = String(v ?? '').trim();
@@ -267,19 +285,142 @@ function minhaMensagem(cid, mid, user) {
 // ── Contas ──────────────────────────────────────────────────────────────────
 const CONVITE = process.env.INVITE_CODE || ''; // vazio = qualquer um que alcance o servidor cria conta
 const scryptP = promisify(scrypt);
-const gerarHash = async (senha) => { const sal = randomBytes(16); return `${sal.toString('hex')}:${(await scryptP(senha, sal, 32)).toString('hex')}`; };
-async function conferir(senha, guardado) {
-  const [sal, hash] = guardado.split(':');
-  return timingSafeEqual(await scryptP(senha, Buffer.from(sal, 'hex'), 32), Buffer.from(hash, 'hex'));
+// O custo vai junto do hash ('scrypt$N$r$p$sal$hash'): dá para subir o custo um dia sem invalidar as senhas.
+// N=2^15 usa 32 MiB por conferência, exatamente o maxmem padrão do Node: por isso o maxmem maior.
+const SCRYPT = { N: 2 ** 15, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
+async function gerarHash(senha) {
+  const sal = randomBytes(16);
+  return `scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$${sal.toString('hex')}$${(await scryptP(senha, sal, 32, SCRYPT)).toString('hex')}`;
 }
-// ponytail: limite por IP em memória (10 erros / 15 min); some ao reiniciar o servidor
-const erros = new Map();
+const hashEmDia = (guardado) => guardado.startsWith(`scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$`);
+async function conferir(senha, guardado) {
+  const partes = String(guardado).split('$');
+  // formato antigo 'sal:hash': parâmetros padrão do scrypt do Node (N=2^14, r=8, p=1)
+  const [N, r, p, sal, hash] = partes[0] === 'scrypt' && partes.length === 6
+    ? [...partes.slice(1, 4).map(Number), partes[4], partes[5]] : [2 ** 14, 8, 1, ...String(guardado).split(':')];
+  const esperado = Buffer.from(hash ?? '', 'hex');
+  if (!sal || esperado.length !== 32) return false;
+  return timingSafeEqual(await scryptP(senha, Buffer.from(sal, 'hex'), 32, { N, r, p, maxmem: SCRYPT.maxmem }), esperado);
+}
+// Nome que não existe confere contra este hash: a resposta demora o mesmo que uma senha errada
+const HASH_FALSO = gerarHash(randomBytes(16).toString('hex'));
+
+// Senhas novas (criar conta, trocar senha). Login continua aceitando as de 6–7 caracteres de antes.
+const COMUNS = new Set(['12345678', '123456789', '1234567890', '87654321', '12341234', '11111111', '00000000', 'senha123',
+  'senha1234', 'minhasenha', 'password', 'password1', 'qwerty123', 'qwertyuiop', 'abc12345', 'abcd1234', 'iloveyou', 'limb1234']);
+function senhaNova(senha, nome) {
+  if (senha.length < 8 || senha.length > 128) throw new HttpError(400, 'A senha precisa ter de 8 a 128 caracteres');
+  const s = senha.toLowerCase();
+  // nome de 2 letras ("ze") aparece dentro de muita palavra: a regra vale a partir de 3
+  if (nome.length >= 3 && s.includes(nome)) throw new HttpError(400, 'A senha não pode conter o seu nome de usuário');
+  if (COMUNS.has(s) || /^(.)\1+$/.test(s)) throw new HttpError(400, 'Essa senha é fácil demais de adivinhar. Escolha outra.');
+  return senha;
+}
+function nomeDe(v) {
+  const name = String(v ?? '').trim().toLowerCase();
+  if (!/^[a-z0-9_.]{2,32}$/.test(name)) throw new HttpError(400, 'Usuário: 2 a 32 caracteres (a-z, 0-9, _ e .)');
+  return name;
+}
+// digests de tamanho fixo: timingSafeEqual exige o mesmo tamanho, e o tempo não entrega o código
+const digest = (s) => createHash('sha256').update(String(s ?? '')).digest();
+const conviteOk = (v) => timingSafeEqual(digest(String(v ?? '').trim()), digest(CONVITE));
+// atrás de um proxy (Caddy/nginx com HTTPS), o IP real é o último do X-Forwarded-For: é o que o nosso proxy
+// acrescentou (os anteriores vêm do cliente e podem ser inventados para fugir dos limites por IP)
+const ipDe = (req) => (process.env.TRUST_PROXY && String(req.headers['x-forwarded-for'] ?? '').split(',').at(-1).trim()) || req.socket.remoteAddress;
+
+// ponytail: limites em memória; somem ao reiniciar o servidor
+const esperaDe = (ms) => (ms >= 60_000 ? `${Math.ceil(ms / 60_000)} min` : `${Math.ceil(ms / 1000)} s`);
+const muitas = (msg, ms) => new HttpError(429, `${msg} Tente de novo em ${esperaDe(ms)}.`, { retry_after: Math.ceil(ms / 1000) });
+const erros = new Map(); // ip → { n, desde }: 10 erros em 15 min (senha errada, convite errado)
 function bloqueado(ip) {
   const e = erros.get(ip);
   if (e && Date.now() - e.desde > 15 * 60_000) erros.delete(ip);
-  else if (e?.n >= 10) throw new HttpError(429, 'Muitas tentativas. Espere 15 minutos.');
+  else if (e?.n >= 10) throw muitas('Muitas tentativas.', e.desde + 15 * 60_000 - Date.now());
 }
 const falhou = (ip) => { const e = erros.get(ip) ?? { n: 0, desde: Date.now() }; e.n++; erros.set(ip, e); };
+// Por conta: do 5º erro seguido em diante, trava 1 min, depois 2, 4… até 15 min; acertar zera.
+// ponytail: quem sabe o nome de alguém consegue travar a conta dele errando de propósito (DoS de bloqueio);
+// o limite por IP segura isso para um atacante só, e em troca ninguém fica chutando a senha de uma conta.
+const errosConta = new Map(); // nome → { n, ate, visto }
+function contaLivre(nome) {
+  const e = errosConta.get(nome);
+  if (e?.ate > Date.now()) throw muitas('Muitas tentativas erradas nesta conta.', e.ate - Date.now());
+}
+function falhouConta(nome) {
+  const e = errosConta.get(nome) ?? { n: 0, ate: 0 };
+  e.n++; e.visto = Date.now();
+  if (e.n >= 5) e.ate = Date.now() + Math.min(15 * 60_000, 60_000 * 2 ** (e.n - 5));
+  errosConta.set(nome, e);
+}
+// A tentativa conta como erro antes de conferir (o scrypt é assíncrono): pedidos em paralelo não furam o limite
+function tentativa(ip, nome) { bloqueado(ip); contaLivre(nome); falhou(ip); falhouConta(nome); }
+function acertou(ip, nome) { const e = erros.get(ip); if (e) e.n--; errosConta.delete(nome); }
+const cadastros = new Map(); // ip → { n, desde }: 5 contas novas por hora
+function cadastro(ip) {
+  const c = cadastros.get(ip);
+  if (c && Date.now() - c.desde > 60 * 60_000) cadastros.delete(ip);
+  else if (c?.n >= 5) throw muitas('Muitas contas criadas a partir daqui.', c.desde + 60 * 60_000 - Date.now());
+  const n = cadastros.get(ip) ?? { n: 0, desde: Date.now() }; n.n++; cadastros.set(ip, n);
+  return () => n.n--; // desfaz, se a conta não chegou a ser criada
+}
+
+// ── Sessões de login ────────────────────────────────────────────────────────
+// Um token por dispositivo; no banco fica só o sha256 dele (quem copiar o banco não entra como ninguém).
+function hashToken(token) { return createHash('sha256').update(String(token)).digest('hex'); }
+function tokenAleatorio() { return randomBytes(32).toString('base64url'); }
+// "Chrome · Windows", "App Limb · Android"…: só para a pessoa reconhecer o aparelho na lista
+function dispositivo(ua = '') {
+  const app = /Electron\//.test(ua) ? 'App Limb' : /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Firefox\//.test(ua) ? 'Firefox'
+    : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Navegador';
+  const so = /Windows/.test(ua) ? 'Windows' : /Android/.test(ua) ? 'Android' : /iPhone|iPad|iPod/.test(ua) ? 'iOS'
+    : /Mac OS X/.test(ua) ? 'macOS' : /CrOS/.test(ua) ? 'ChromeOS' : /Linux/.test(ua) ? 'Linux' : '';
+  return so ? `${app} · ${so}` : app;
+}
+function criarSessao(userId, req) {
+  const token = tokenAleatorio(), agora = Date.now();
+  q('INSERT INTO sessions (id, user_id, token_hash, criado, usado, expira, dispositivo, ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(snowflake(), userId, hashToken(token), agora, agora, agora + SESSAO_TTL, dispositivo(String(req.headers['user-agent'] ?? '')), ipDe(req) ?? null);
+  revogar(q('SELECT id FROM sessions WHERE user_id = ? ORDER BY usado DESC, id DESC LIMIT -1 OFFSET ?').all(userId, MAX_SESSOES).map((s) => s.id));
+  return token;
+}
+// token → { user, sessao } ou null. Expiração deslizante: cada uso empurra para mais 30 dias,
+// gravando no máximo uma vez por hora por sessão (e não a cada pedido)
+function autenticar(token) {
+  if (!token || typeof token !== 'string') return null;
+  const agora = Date.now();
+  const r = q(`SELECT s.id AS sessao, s.usado, u.id, u.name FROM sessions s JOIN users u ON u.id = s.user_id
+    WHERE s.token_hash = ? AND s.expira > ?`).get(hashToken(token), agora);
+  if (!r) return null;
+  if (agora - Number(r.usado) > 3_600_000) q('UPDATE sessions SET usado = ?, expira = ? WHERE id = ?').run(agora, agora + SESSAO_TTL, r.sessao);
+  return { user: { id: r.id, username: r.name }, sessao: r.sessao };
+}
+// O token para de valer e os gateways abertos com ele caem na hora (4004), levando presença e voz junto
+function revogar(ids) {
+  if (!ids.length) return;
+  for (const id of ids) q('DELETE FROM sessions WHERE id = ?').run(id);
+  const fora = new Set(ids.map(String));
+  for (const s of [...sessions.values()]) {
+    if (!fora.has(String(s.auth))) continue;
+    const ws = s.ws;
+    s.ws = null; // o 'close' deste socket não deixa a sessão esperando um RESUME
+    encerrar(s);
+    ws?.close(4004, 'Authentication failed');
+  }
+}
+const outrasSessoes = (user, req) => q('SELECT id FROM sessions WHERE user_id = ? AND id != ?').all(user.id, req.sessao).map((s) => s.id);
+// Faxina: sessões vencidas saem do banco (gateway aberto conta como uso) e os limites velhos saem da memória
+function faxina() {
+  const agora = Date.now();
+  for (const id of new Set([...sessions.values()].filter((s) => s.ws).map((s) => s.auth))) {
+    q('UPDATE sessions SET usado = ?, expira = ? WHERE id = ?').run(agora, agora + SESSAO_TTL, id);
+  }
+  q('DELETE FROM sessions WHERE expira <= ?').run(agora);
+  for (const [ip, e] of erros) if (agora - e.desde > 15 * 60_000) erros.delete(ip);
+  for (const [ip, c] of cadastros) if (agora - c.desde > 60 * 60_000) cadastros.delete(ip);
+  for (const [nome, e] of errosConta) if (e.ate <= agora && agora - e.visto > 60 * 60_000) errosConta.delete(nome);
+}
+faxina();
+setInterval(faxina, 15 * 60_000).unref();
 
 // STUN/TURN entregues ao cliente no READY da voz. Entre redes diferentes, STUN resolve a maioria
 // dos casos; redes muito restritas precisam de um TURN (ex.: coturn) — ver README.
@@ -292,30 +433,86 @@ const rotas = [
   // O que a tela de login precisa saber antes de entrar
   ['GET', /^\/api\/info$/, () => ({ convite: !!CONVITE }), { publica: true }],
 
-  // Entrar ou criar conta. Nome novo cria a conta (com código de convite, se o servidor exigir).
+  // Entrar numa conta que já existe; cada login é uma sessão nova (um token por dispositivo).
+  // Nome desconhecido e senha errada dão a mesma resposta, no mesmo tempo: não dá para descobrir quem tem conta.
   ['POST', /^\/api\/login$/, async (req) => {
-    // atrás de um proxy (Caddy/nginx com HTTPS), o IP real vem no X-Forwarded-For
-    const ip = (process.env.TRUST_PROXY && String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim()) || req.socket.remoteAddress;
-    bloqueado(ip);
-    const name = String(req.body.username ?? '').trim().toLowerCase();
+    const ip = ipDe(req);
+    const name = nomeDe(req.body.username);
     const senha = String(req.body.password ?? '');
-    if (!/^[a-z0-9_.]{2,32}$/.test(name)) throw new HttpError(400, 'Usuário: 2 a 32 caracteres (a-z, 0-9, _ e .)');
-    if (senha.length < 6 || senha.length > 128) throw new HttpError(400, 'Senha: 6 a 128 caracteres');
-    let u = q('SELECT * FROM users WHERE name = ?').get(name);
-    if (!u) {
-      if (CONVITE && String(req.body.invite ?? '') !== CONVITE) { falhou(ip); throw new HttpError(403, 'Código de convite inválido'); }
-      u = { id: snowflake(), name, token: randomBytes(24).toString('base64url') };
-      q('INSERT INTO users (id, name, token, senha) VALUES (?, ?, ?, ?)').run(u.id, u.name, u.token, await gerarHash(senha));
-      broadcast('USER_CREATE', { id: u.id, username: u.name });
-    } else if (u.senha == null) {
-      // conta de antes das senhas: o primeiro login define a senha
-      q('UPDATE users SET senha = ? WHERE id = ?').run(await gerarHash(senha), u.id);
-    } else if (!(await conferir(senha, u.senha))) {
-      falhou(ip);
-      throw new HttpError(401, 'Usuário ou senha incorretos');
+    if (!senha || senha.length > 128) throw new HttpError(400, 'Digite a senha (até 128 caracteres)');
+    tentativa(ip, name);
+    const u = q('SELECT * FROM users WHERE name = ?').get(name);
+    if (u && u.senha == null) {
+      // Conta de antes das senhas: o primeiro login define a senha. Com convite no servidor, só quem tem o código
+      // reivindica a conta. Sem convite, qualquer um que alcança o servidor já cria conta: exigir mais só
+      // trancaria o dono de fora.
+      if (CONVITE && !conviteOk(req.body.invite)) {
+        throw new HttpError(403, 'Esta conta é de antes das senhas. Para criar a senha dela, digite também o código de convite do servidor.', { convite: true });
+      }
+      const hash = await gerarHash(senhaNova(senha, name)); // senha fraca (400) não zera os contadores de erro
+      acertou(ip, name);
+      q('UPDATE users SET senha = ? WHERE id = ?').run(hash, u.id);
+    } else {
+      const guardado = u?.senha ?? (await HASH_FALSO);
+      const ok = await conferir(senha, guardado);
+      // hash antigo (N=2^14) custa metade: mais um scrypt igual, para o tempo não entregar quais contas existem
+      if (!hashEmDia(guardado)) await scryptP(senha, randomBytes(16), 32, { N: 2 ** 14, r: 8, p: 1 });
+      if (!u || !ok) throw new HttpError(401, 'Usuário ou senha incorretos');
+      acertou(ip, name);
+      if (!hashEmDia(u.senha)) q('UPDATE users SET senha = ? WHERE id = ?').run(await gerarHash(senha), u.id); // formato antigo: refaz
     }
-    return { token: u.token, user: { id: u.id, username: u.name } };
+    return { token: criarSessao(u.id, req), user: { id: u.id, username: u.name } };
   }, { publica: true }],
+
+  // Criar conta (com código de convite, se o servidor exigir). Já entra: devolve o token da primeira sessão.
+  ['POST', /^\/api\/register$/, async (req) => {
+    const ip = ipDe(req);
+    bloqueado(ip);
+    const name = nomeDe(req.body.username);
+    if (CONVITE && !conviteOk(req.body.invite)) { falhou(ip); throw new HttpError(403, 'Código de convite inválido'); }
+    const senha = senhaNova(String(req.body.password ?? ''), name);
+    const emUso = () => q('SELECT 1 FROM users WHERE name = ?').get(name);
+    // antes do scrypt: nome ocupado não gasta CPU, e conta como erro (senão dá para repetir sem limite)
+    if (emUso()) { falhou(ip); throw new HttpError(409, 'Esse nome de usuário já está em uso'); }
+    const desfazer = cadastro(ip);
+    const hash = await gerarHash(senha);
+    // confere de novo depois do await: dois cadastros com o mesmo nome ao mesmo tempo não passam os dois
+    if (emUso()) { desfazer(); falhou(ip); throw new HttpError(409, 'Esse nome de usuário já está em uso'); }
+    const u = { id: snowflake(), username: name };
+    // users.token é NOT NULL UNIQUE desde a primeira versão: ganha um valor aleatório que nunca é usado
+    q('INSERT INTO users (id, name, token, senha) VALUES (?, ?, ?, ?)').run(u.id, name, tokenAleatorio(), hash);
+    broadcast('USER_CREATE', u);
+    return { token: criarSessao(u.id, req), user: u };
+  }, { publica: true }],
+
+  // Sair: derruba só este dispositivo (os gateways abertos com o token fecham com 4004)
+  ['POST', /^\/api\/logout$/, (req) => { revogar([req.sessao]); return null; }],
+
+  // Trocar a senha: confere a atual e, como no Discord, desconecta os outros dispositivos (este continua)
+  ['POST', /^\/api\/users\/@me\/password$/, async (req, user) => {
+    const ip = ipDe(req);
+    const nova = senhaNova(String(req.body.senha_nova ?? ''), user.username);
+    const { senha } = q('SELECT senha FROM users WHERE id = ?').get(user.id);
+    if (senha != null) { // conta de antes das senhas que entrou pelo token antigo: não tem senha atual para conferir
+      tentativa(ip, user.username);
+      if (!(await conferir(String(req.body.senha_atual ?? ''), senha))) throw new HttpError(403, 'A senha atual está incorreta');
+      acertou(ip, user.username);
+    }
+    q('UPDATE users SET senha = ? WHERE id = ?').run(await gerarHash(nova), user.id);
+    revogar(outrasSessoes(user, req));
+    return null;
+  }],
+
+  // Dispositivos conectados: só as sessões da própria conta, nunca o hash do token
+  ['GET', /^\/api\/users\/@me\/sessions$/, (req, user) => q('SELECT id, dispositivo, criado, usado FROM sessions WHERE user_id = ? AND expira > ? ORDER BY usado DESC')
+    .all(user.id, Date.now()).map((s) => ({ id: s.id, dispositivo: s.dispositivo, criado: Number(s.criado), usado: Number(s.usado), atual: s.id === req.sessao }))],
+  ['DELETE', /^\/api\/users\/@me\/sessions\/(\d+)$/, (req, user, [sid]) => {
+    const s = q('SELECT id FROM sessions WHERE id = ? AND user_id = ?').get(id64(sid), user.id);
+    if (!s) throw new HttpError(404, 'Sessão não encontrada');
+    revogar([s.id]);
+    return null;
+  }],
+  ['POST', /^\/api\/users\/@me\/sessions\/encerrar-outras$/, (req, user) => { revogar(outrasSessoes(user, req)); return null; }],
 
   ['POST', /^\/api\/guilds$/, (req, user) => {
     const name = String(req.body.name ?? '').trim().slice(0, 100);
@@ -466,17 +663,19 @@ const server = http.createServer(async (req, res) => {
     const rota = rotas.find(([m, re]) => m === req.method && re.test(url.pathname));
     if (!rota) throw new HttpError(404, 'Rota não encontrada');
     const [, re, fn, opts] = rota;
-    const user = userByToken(req.headers.authorization);
-    if (!user && !opts?.publica) throw new HttpError(401, 'Não autorizado');
+    const auth = opts?.publica ? null : autenticar(req.headers.authorization);
+    if (!auth && !opts?.publica) throw new HttpError(401, 'Não autorizado');
+    req.sessao = auth?.sessao; // sessão de login deste pedido (sair, trocar senha, dispositivos)
     req.body = ['POST', 'PATCH'].includes(req.method) ? await lerCorpo(req) : {};
     req.query = url.searchParams;
-    const out = await fn(req, user, url.pathname.match(re).slice(1));
-    if (out === null) return res.writeHead(204).end();
-    res.writeHead(200, { 'Content-Type': 'application/json' }).end(json(out));
+    const out = await fn(req, auth?.user, url.pathname.match(re).slice(1));
+    // no-store: respostas da API (algumas com token) não ficam em cache nenhum
+    if (out === null) return res.writeHead(204, { 'Cache-Control': 'no-store' }).end();
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(json(out));
   } catch (e) {
     if (!e.status) console.error(e);
-    res.writeHead(e.status || 500, { 'Content-Type': 'application/json' })
-      .end(json({ message: e.status ? e.message : 'Erro interno' }));
+    res.writeHead(e.status || 500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+      .end(json({ message: e.status ? e.message : 'Erro interno', ...e.extra }));
   }
 });
 
