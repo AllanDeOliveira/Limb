@@ -47,17 +47,24 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
     entrando = { canalId: canal.id, promessa };
     return promessa;
   }
+  // Sem microfone (não tem, está bloqueado no Windows ou em uso por outro programa): entra só ouvindo,
+  // como o Discord, em vez de recusar a chamada. O motivo aparece no painel de voz.
+  const MOTIVO_SEM_MIC = {
+    NotFoundError: 'Nenhum microfone encontrado.',
+    NotAllowedError: 'O Windows bloqueou o microfone (Configurações → Privacidade → Microfone).',
+    NotReadableError: 'O microfone está em uso por outro programa.',
+  };
+  async function abrirMicrofone() {
+    try { return { stream: await navigator.mediaDevices.getUserMedia({ audio: restricoes() }) }; }
+    catch (e) { return { stream: new MediaStream(), semMic: MOTIVO_SEM_MIC[e.name] ?? `Microfone indisponível (${e.message}).` }; }
+  }
+
   async function entrarAgora(canal) {
-    let stream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: restricoes() });
-    } catch (e) {
-      return alert(`Microfone indisponível: ${e.message}`);
-    }
+    const { stream, semMic } = await abrirMicrofone();
     if (entrando?.canalId !== canal.id) { stream.getTracks().forEach((t) => t.stop()); return; } // trocou de canal no meio
     if (v) sair();
     v = { channelId: canal.id, guildId: canal.guild_id, stream, ws: null, ssrc: 0, status: 'conectando…', ice: [],
-      mute: false, deaf: false, pares: new Map(), audios: new Map(),
+      mute: !!semMic, deaf: false, semMic, pares: new Map(), audios: new Map(),
       saida: criarSaida(), // áudio dos outros: cada pessoa → ganho próprio → volume geral → alto-falante
       ganhos: new Map(), // userId → { fonte, ganho }
       tela: null, // minha transmissão: { stream, qualidade }
@@ -94,7 +101,11 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
   }
 
   // Ensurdecer também silencia o microfone; desmutar estando surdo desfaz os dois (igual ao Discord)
-  function alternarMudo() { if (v) aplicar(v.deaf ? { mute: false, deaf: false } : { mute: !v.mute }); }
+  function alternarMudo() {
+    if (!v) return;
+    if (v.semMic) return reabrirMicrofone(); // conectou um microfone depois: tenta de novo
+    aplicar(v.deaf ? { mute: false, deaf: false } : { mute: !v.mute });
+  }
   function alternarSurdo() { if (v) aplicar(v.deaf ? { mute: false, deaf: false } : { mute: true, deaf: true }); }
   function aplicar(patch) {
     Object.assign(v, patch);
@@ -170,7 +181,8 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
     const pc = new RTCPeerConnection({ iceServers: v.ice });
     const p = { pc, educado: BigInt(store.me.id) > BigInt(id), fazendoOferta: false, ignorando: false, telaSenders: [] };
     v.pares.set(id, p);
-    v.stream.getTracks().forEach((t) => pc.addTrack(t, v.stream));
+    if (v.stream.getAudioTracks().length) v.stream.getTracks().forEach((t) => pc.addTrack(t, v.stream));
+    else pc.addTransceiver('audio', { direction: 'sendrecv', streams: [v.stream] });
     if (v.tela) enviarTelaPara(p);
 
     pc.onnegotiationneeded = async () => {
@@ -315,7 +327,9 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
   function escutarMicrofone() {
     v.fonteEscuta?.disconnect();
     v.escuta?.stop();
-    v.escuta = v.stream.getAudioTracks()[0].clone();
+    const [faixa] = v.stream.getAudioTracks();
+    if (!faixa) { v.escuta = null; return; } // só ouvindo: nada para analisar
+    v.escuta = faixa.clone();
     v.fonteEscuta = v.ctx.createMediaStreamSource(new MediaStream([v.escuta]));
     v.fonteEscuta.connect(v.analisador);
   }
@@ -325,15 +339,20 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
   async function reabrirMicrofone() {
     if (!v) return;
     const conexao = v;
-    const novo = await navigator.mediaDevices.getUserMedia({ audio: restricoes() });
+    const { stream: novo, semMic } = await abrirMicrofone();
     if (v !== conexao) { novo.getTracks().forEach((t) => t.stop()); return; } // saiu da voz enquanto abria
+    if (semMic) { v.semMic = semMic; avisar(); return; } // continua como estava (ou só ouvindo)
     const [faixa] = novo.getAudioTracks();
+    if (v.semMic) { v.semMic = null; v.mute = false; } // achou microfone agora: já sai do mudo
     faixa.enabled = !v.mute;
     const antigas = v.stream.getAudioTracks();
-    await Promise.all([...v.pares.values()].map((p) => p.pc.getSenders().find((s) => antigas.includes(s.track))?.replaceTrack(faixa)));
+    // o lugar do microfone é o primeiro transceptor de áudio que não é da tela (existe mesmo só ouvindo)
+    await Promise.all([...v.pares.values()].map((p) => p.pc.getTransceivers()
+      .find((t) => t.receiver.track.kind === 'audio' && !p.telaSenders.includes(t.sender))?.sender.replaceTrack(faixa)));
     antigas.forEach((t) => t.stop());
     v.stream = novo;
     escutarMicrofone();
+    enviarGateway({ op: 4, d: estado() });
     avisar();
   }
 
@@ -373,7 +392,7 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
     // tela de alguém (ou a minha, como prévia) para o palco; null se não houver
     tela: (userId) => (userId === store.me?.id ? v?.tela?.stream : v?.telas.get(userId)) ?? null,
     surdo: () => !!v?.deaf,
-    atual: () => v && { channelId: v.channelId, status: v.status, mute: v.mute, deaf: v.deaf, avisoMudo: !!v.avisoMudo,
+    atual: () => v && { channelId: v.channelId, status: v.status, mute: v.mute, deaf: v.deaf, avisoMudo: !!v.avisoMudo, semMic: v.semMic ?? null,
       transmitindo: !!v.tela, qualidade: v.tela?.qualidade.nome,
       conectados: [...v.pares.values()].filter((p) => p.pc.connectionState === 'connected').length },
     // nova sessão no gateway principal (READY, não RESUMED): a voz antiga não vale mais

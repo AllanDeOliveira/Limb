@@ -184,6 +184,47 @@ function criarJanela(endpoint) {
     janela.show(); janela.focus();
   });
   ipcMain.on('limb:conexao', (e) => { if (daPagina(e)) abrirConexao(); });
+  // Trocar de servidor pela própria janela principal. A página só escolhe entre servidores do histórico;
+  // endereço novo (convite) passa por uma confirmação nativa: um servidor não consegue mandar você para
+  // outro lugar sem você ver.
+  ipcMain.handle('limb:servidores', async (e) => {
+    if (!daPagina(e)) return null;
+    const lista = await Promise.all(config.historico.map(async (h) => ({ ...h, online: (await testarServidor(h.url)).ok })));
+    return { atual: config.endpoint ?? null, lista };
+  });
+  // Hospedando com o Tailscale desligado, ninguém de fora consegue entrar, e quem hospeda não percebe:
+  // a página consulta isto e mostra uma faixa com o botão de ligar
+  ipcMain.handle('limb:hospedagem', async (e) => {
+    if (!daPagina(e) || !hospedandoAmigos) return null;
+    const st = await tailscale.status();
+    return { instalado: !!st.instalado, ligado: st.estado === 'Running' };
+  });
+  ipcMain.handle('limb:ligarTailscale', async (e) => {
+    if (!daPagina(e)) return null;
+    const st = await tailscale.status();
+    if (!st.instalado) { shell.openExternal(tailscale.DOWNLOAD); return { baixando: true }; }
+    return tailscale.ligar(st.estado, (url) => shell.openExternal(url));
+  });
+  ipcMain.handle('limb:trocarServidor', (e, url) => (daPagina(e) ? trocarPara(url == null ? null : String(url)) : { erro: 'negado' }));
+  ipcMain.handle('limb:entrarPorConvite', async (e, texto) => {
+    if (!daPagina(e)) return { erro: 'negado' };
+    const lido = lerConvite(texto);
+    if (!lido) return { erro: 'Não achei um endereço no convite. Ele parece com http://100.101.102.103:3000' };
+    const teste = await testarServidor(lido.url);
+    if (!teste.ok) return { erro: teste.erro };
+    const { response } = await dialog.showMessageBox(janela, {
+      type: 'question', buttons: ['Entrar', 'Cancelar'], defaultId: 0, cancelId: 1, title: NOME,
+      message: `Entrar no servidor ${lido.url}?`, detail: 'O Limb reinicia já conectado a ele. Você volta para cá pela lista de servidores.',
+    });
+    if (response !== 0) return { cancelado: true };
+    const host = new URL(lido.url).hostname;
+    const nome = await tailscale.status().then((st) => st.pares?.find((p) => p.ip === host)?.nome).catch(() => null);
+    lembrarServidor({ url: lido.url, codigo: lido.codigo, nome });
+    Object.assign(config, { endpoint: lido.url, conviteRecebido: lido.codigo });
+    salvarConfig();
+    reiniciar();
+    return {};
+  });
 
   // Compartilhar tela. O Electron não tem o seletor do Chrome: a página lista as fontes (com miniatura),
   // a pessoa escolhe, e o getDisplayMedia seguinte recebe essa fonte. A escolha vale por 15 s e uma vez.
@@ -257,7 +298,7 @@ function criarBandeja() {
   bandeja.setToolTip(`${NOME} — hospedando para seus amigos`);
   const menu = () => Menu.buildFromTemplate([
     { label: `Abrir o ${NOME}`, click: mostrarJanela },
-    { label: 'Servidor…', click: () => { mostrarJanela(); abrirConexao(); } }, // a janela de servidor é modal: a principal precisa estar visível
+    { label: 'Servidor…', click: () => abrirConexao() },
     { type: 'separator' },
     { label: 'Iniciar com o Windows', type: 'checkbox', checked: !!config.iniciarComWindows, enabled: podeIniciarComWindows,
       click: (item) => { config.iniciarComWindows = item.checked; salvarConfig(); aplicarInicioComWindows(); } },
@@ -277,7 +318,8 @@ function abrirConexao(erro = null) {
   // não tinha o que fazer. Se não ficar pronta em 4 s, recarrega uma vez; em 8 s, mostra de qualquer jeito.
   const win = janelaConexao = new BrowserWindow({
     width: 600, height: 760, minWidth: 480, minHeight: 500, minimizable: false, title: `${NOME} — Servidor`, show: false,
-    parent: janela ?? undefined, modal: !!janela, autoHideMenuBar: true, backgroundColor: '#1e2023',
+    // Janela comum, sem `parent`/`modal`: num computador a versão modal nunca carregava (ficava em branco)
+    autoHideMenuBar: true, backgroundColor: '#1e2023',
     webPreferences: { preload: path.join(raiz, 'desktop', 'conexao-preload.cjs'), contextIsolation: true, sandbox: true },
   });
   vigiar(win, 'servidor');
@@ -298,8 +340,7 @@ ipcMain.handle('conexao:ler', (e) => {
   return { config, ips, erro: erroConexao, primeiraVez, portatil: !!process.env.PORTABLE_EXECUTABLE_DIR, podeIniciarComWindows };
 });
 // Histórico: trocar com um clique (url null = este computador), esquecer, e o "Iniciar com o Windows"
-ipcMain.handle('conexao:trocar', (e, url) => {
-  if (!daConexao(e)) return { erro: 'negado' };
+function trocarPara(url) {
   if (url == null) { config.endpoint = null; config.conviteRecebido = ''; }
   else {
     const h = config.historico.find((x) => x.url === url);
@@ -310,7 +351,8 @@ ipcMain.handle('conexao:trocar', (e, url) => {
   salvarConfig();
   reiniciar();
   return {};
-});
+}
+ipcMain.handle('conexao:trocar', (e, url) => (daConexao(e) ? trocarPara(url) : { erro: 'negado' }));
 ipcMain.handle('conexao:esquecer', (e, url) => {
   if (!daConexao(e)) return null;
   config.historico = config.historico.filter((h) => h.url !== url);
@@ -333,8 +375,16 @@ ipcMain.handle('conexao:tailscaleLigar', async (e) => {
 });
 ipcMain.handle('conexao:abrirCompartilhar', (e) => { if (daConexao(e)) shell.openExternal(tailscale.PAINEL_MAQUINAS); });
 ipcMain.handle('conexao:copiar', (e, texto) => { if (daConexao(e)) clipboard.writeText(String(texto).slice(0, 2000)); });
-ipcMain.handle('conexao:testar', async (e, url) => {
-  if (!daConexao(e)) return { ok: false, erro: 'negado' };
+ipcMain.handle('conexao:testar', (e, url) => (daConexao(e) ? testarServidor(url) : { ok: false, erro: 'negado' }));
+// Convite colado: a mensagem inteira, só a URL, ou só "100.x.x.x:3000" (mesma regra da janela Servidor)
+function lerConvite(texto) {
+  const t = String(texto ?? '').slice(0, 2000);
+  let url = /https?:\/\/[^\s<>"'()]+/.exec(t)?.[0];
+  if (!url) { const m = /\b(\d{1,3}(?:\.\d{1,3}){3})(?::(\d{2,5}))?\b/.exec(t); if (m) url = `http://${m[1]}:${m[2] ?? 3000}`; }
+  try { url = url && new URL(url).origin; } catch { url = null; }
+  return url ? { url, codigo: /c[óo]digo[^:\n]*:\s*(\S+)/i.exec(t)?.[1] ?? '' } : null;
+}
+async function testarServidor(url) {
   let origem;
   try { origem = new URL(url).origin; if (!/^https?:$/.test(new URL(url).protocol)) throw 0; } catch { return { ok: false, erro: 'endereço inválido (use http://IP:porta)' }; }
   try {
@@ -353,7 +403,7 @@ ipcMain.handle('conexao:testar', async (e, url) => {
     if (!par.online) return { ok: false, erro: `O computador do seu amigo (${par.nome}) está desligado ou sem Tailscale.` };
     return { ok: false, erro: `O computador dele (${par.nome}) está online, mas o servidor não respondeu: o Limb dele está rodando (pode estar só no ícone perto do relógio), hospedando, com "Deixar outros computadores entrarem" marcado? O firewall dele pode ter bloqueado o app.` };
   }
-});
+}
 ipcMain.handle('conexao:salvar', async (e, novo) => {
   if (!daConexao(e)) return { erro: 'negado' };
   const porta = Math.trunc(Number(novo.porta));

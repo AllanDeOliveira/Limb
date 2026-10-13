@@ -432,7 +432,7 @@ function agendarRender() {
 // Sair e trocar de servidor: sempre visíveis, até antes de conectar (senão uma falha deixa a janela sem saída)
 const botoesConta = () => [
   botaoIcone('ajustes', 'Voz e áudio', { onclick: abrirAjustesAudio }),
-  ponte()?.abrirConexao && botaoIcone('servidor', 'Trocar de servidor', { onclick: () => ponte().abrirConexao() }),
+  ponte()?.abrirConexao && botaoIcone('servidor', 'Trocar de servidor', { onclick: abrirServidores }),
   botaoIcone('sair', 'Sair da conta', { onclick: sair }),
 ];
 const statusConexao = () => (store.conn === 'conectado' ? 'online' : store.conn);
@@ -546,6 +546,62 @@ function renderCanalVoz(c) {
   );
 }
 
+// ── Servidores (app desktop) ────────────────────────────────────────────────
+// A troca acontece aqui mesmo, na janela principal; a janela "Servidor" separada fica para configurar
+// a hospedagem. App desktop antigo (sem `servidores` na ponte): cai na janela separada.
+const servDlg = $('#servDlg');
+async function abrirServidores() {
+  const nativo = ponte();
+  if (!nativo?.servidores) return nativo?.abrirConexao();
+  $('#servErro').textContent = '';
+  $('#servConvite').value = '';
+  trocar($('#servLista'), h('li', { className: 'nada', textContent: 'Verificando quais estão no ar…' }));
+  servDlg.showModal();
+  const d = await nativo.servidores();
+  const linha = (url, nomeServ, detalhe, online) => {
+    const atual = url === d.atual;
+    return h('li', { className: `srv${atual ? ' atual' : ''}` },
+      h('span', { className: `bola${online ? ' on' : online === false ? ' off' : ''}`, title: online ? 'No ar' : online === false ? 'Fora do ar' : '' }),
+      h('span', { className: 'info' }, h('b', { textContent: nomeServ }), h('small', { textContent: detalhe })),
+      atual ? h('span', { className: 'tag', textContent: 'ATUAL' })
+        : h('button', { type: 'button', className: 'ok', textContent: 'Entrar', onclick: async (e) => {
+          e.target.disabled = true; e.target.textContent = 'Reiniciando…';
+          const r = await nativo.trocarServidor(url);
+          if (r?.erro) { $('#servErro').textContent = r.erro; e.target.disabled = false; e.target.textContent = 'Entrar'; }
+        } }));
+  };
+  trocar($('#servLista'),
+    linha(null, 'Este computador', 'Hospedar aqui', d.atual === null ? true : undefined),
+    ...d.lista.map((s) => linha(s.url, s.nome, s.url, s.online)));
+}
+$('#servEntrar').addEventListener('click', async (e) => {
+  const texto = $('#servConvite').value.trim();
+  if (!texto) { $('#servErro').textContent = 'Cole o convite que seu amigo mandou.'; $('#servConvite').focus(); return; }
+  e.target.disabled = true; $('#servErro').textContent = 'Testando a conexão…';
+  const r = await ponte().entrarPorConvite(texto);
+  e.target.disabled = false;
+  $('#servErro').textContent = r?.erro ?? '';
+});
+$('#servMais').addEventListener('click', () => { servDlg.close(); ponte()?.abrirConexao(); });
+
+// Hospedando com o Tailscale desligado: faixa no topo, porque quem hospeda não percebe que ninguém entra
+async function checarHospedagem() {
+  const d = await ponte()?.hospedagem?.().catch(() => null);
+  const faixa = $('#alertaHost');
+  faixa.hidden = !d || d.ligado;
+  if (d && !d.ligado) faixa.querySelector('span').textContent = d.instalado
+    ? 'Seus amigos não conseguem entrar: o Tailscale está desligado neste computador.'
+    : 'Seus amigos não conseguem entrar: o Tailscale não está instalado neste computador.';
+}
+$('#alertaHost button').addEventListener('click', async (e) => {
+  e.target.disabled = true;
+  const r = await ponte()?.ligarTailscale();
+  e.target.disabled = false;
+  if (r?.erro) $('#alertaHost span').textContent = r.erro;
+  setTimeout(checarHospedagem, 2000);
+});
+if (ponte()?.hospedagem) { checarHospedagem(); setInterval(checarHospedagem, 20_000); }
+
 // ── Voz e áudio ─────────────────────────────────────────────────────────────
 // Ajustes valem na hora (sem "salvar") e ficam guardados neste computador.
 const audioDlg = $('#audioDlg'), pessoaDlg = $('#pessoaDlg');
@@ -598,8 +654,10 @@ function renderPainelVoz() {
       h('b', { className: a.status === 'conectado' ? 'ok' : '', textContent: a.status === 'conectado' ? 'Voz conectada' : 'Conectando…' }),
       h('small', { textContent: `${canalPorId(a.channelId)?.name ?? ''} · ${a.conectados} com áudio` }),
       a.transmitindo && h('small', { className: 'ok', textContent: `Transmitindo · ${a.qualidade}` }),
-      a.avisoMudo && h('small', { className: 'aviso', role: 'status', textContent: 'Você está mudo' })),
-    botaoIcone(a.mute ? 'micOff' : 'mic', a.mute ? 'Ligar microfone' : 'Desligar microfone', { className: a.mute ? 'off' : '', ariaPressed: String(a.mute), onclick: voz.alternarMudo }),
+      a.semMic && h('small', { className: 'aviso', role: 'status', title: a.semMic, textContent: `Só ouvindo: ${a.semMic}` }),
+      !a.semMic && a.avisoMudo && h('small', { className: 'aviso', role: 'status', textContent: 'Você está mudo' })),
+    botaoIcone(a.mute ? 'micOff' : 'mic', a.semMic ? 'Tentar o microfone de novo' : a.mute ? 'Ligar microfone' : 'Desligar microfone',
+      { className: a.mute ? 'off' : '', ariaPressed: String(a.mute), onclick: voz.alternarMudo }),
     botaoIcone(a.deaf ? 'foneOff' : 'fone', a.deaf ? 'Ligar áudio' : 'Desligar áudio', { className: a.deaf ? 'off' : '', ariaPressed: String(a.deaf), onclick: voz.alternarSurdo }),
     botaoIcone('tela', a.transmitindo ? 'Parar de compartilhar' : 'Compartilhar tela', {
       className: a.transmitindo ? 'on' : '', ariaPressed: String(a.transmitindo),
@@ -880,6 +938,6 @@ if (conviteUrl) {
 // App desktop: trocar de servidor (hospedar aqui ou entrar no de um amigo)
 if (ponte()?.abrirConexao) {
   $('#trocarServidor').hidden = false;
-  $('#trocarServidor').addEventListener('click', () => ponte().abrirConexao());
+  $('#trocarServidor').addEventListener('click', abrirServidores);
 }
 salvo.get() ? entrar(salvo.get()) : ($('#login').hidden = false);

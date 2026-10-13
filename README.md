@@ -83,8 +83,13 @@ conversando enquanto o computador estiver ligado. Em **Servidor → Opções**, 
 para o servidor subir sozinho ao ligar o PC. Para hospedar, prefira o **instalador**: na versão portátil o
 Windows pode perguntar sobre o firewall a cada abertura.
 
-Os servidores em que você já entrou ficam em **Servidor → Seus servidores**, com a bolinha verde nos que
-estão no ar: um clique troca de um para o outro.
+Para trocar de servidor, clique no botão de servidor (embaixo, ao lado do seu nome) ou em **Conectar a outro
+servidor…** no login: aparecem os servidores em que você já entrou, com a bolinha verde nos que estão no ar
+(um clique troca), e um campo para colar o convite de um amigo novo. Hospedando com o Tailscale desligado, o
+Limb avisa no topo da janela, porque ninguém de fora consegue entrar.
+
+Sem microfone (ou com ele bloqueado no Windows), você entra na chamada só ouvindo; ao conectar um microfone,
+clique no botão do microfone.
 
 ### Como os amigos alcançam o seu computador
 

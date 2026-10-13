@@ -86,6 +86,10 @@
   #voice .vstatus .ok { color: var(--ok); }
   #voice .vstatus .aviso { color: var(--err); font-weight: 600; }
   #voice .vstatus small { color: var(--mut); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #voice .vstatus small.aviso { white-space: normal; }
+  #alertaHost { display: flex; align-items: center; gap: 10px; padding: 8px 12px 8px 16px; background: rgba(255, 97, 102, .14); border-bottom: 1px solid rgba(255, 97, 102, .35); font-size: 14px; flex: none; }
+  #alertaHost span { flex: 1; }
+  #alertaHost button { border: 0; border-radius: 8px; padding: 6px 12px; background: var(--acc); color: var(--acc-tinta); font-weight: 700; white-space: nowrap; }
   #voice .vstatus small.ok { color: var(--ok); }
   #voice .ib { flex: 1; }
 
@@ -246,6 +250,21 @@
   #telaDlg[data-desktop] #telaOk { display: none; } /* no app desktop, clicar na fonte já compartilha */
   #pedir { width: min(440px, calc(100vw - 32px)); }
   #audioDlg, #pessoaDlg { width: min(420px, calc(100vw - 32px)); }
+  #servDlg { width: min(480px, calc(100vw - 32px)); }
+  .servlista { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 6px; max-height: 40vh; overflow-y: auto; }
+  .servlista .srv { display: flex; align-items: center; gap: 10px; background: var(--bg1); border: 1px solid var(--linha); border-radius: 10px; padding: 8px 8px 8px 12px; }
+  .servlista .srv.atual { border-color: var(--acc); }
+  .servlista .bola { width: 10px; height: 10px; border-radius: 50%; background: var(--fraco); flex: none; }
+  .servlista .bola.on { background: var(--ok); } .servlista .bola.off { background: var(--err); }
+  .servlista .info { flex: 1; min-width: 0; display: grid; }
+  .servlista .info b, .servlista .info small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .servlista .info small { color: var(--mut); font-size: 12px; }
+  .servlista .tag { font-size: 12px; font-weight: 800; color: var(--acc); padding-right: 6px; }
+  .servlista .ok { border: 0; border-radius: 8px; padding: 7px 14px; background: var(--acc); color: var(--acc-tinta); font-weight: 700; }
+  .servlista .ok:disabled { opacity: .6; }
+  #servConvite { background: var(--bg0); border: 1px solid var(--linha); border-radius: 8px; padding: 10px; resize: vertical; font-weight: 400; width: 100%; }
+  #servConvite:focus { border-color: var(--acc); outline: none; }
+  #servErro { margin: 8px 0 0; }
   .campos { display: grid; gap: 14px; }
   .campos label { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
   .campos label.check { display: flex; align-items: center; gap: 8px; font-weight: 400; }
@@ -338,6 +357,7 @@
       <button class="ib so-estreito" id="abrirBusca" aria-label="Buscar mensagens" title="Buscar"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 11m-7 0a7 7 0 1 0 14 0a7 7 0 1 0-14 0M20 20l-3.5-3.5"/></svg></button>
       <button class="ib so-medio" id="abrirMembros" aria-label="Membros" title="Membros"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0-8 0M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></button>
     </header>
+    <div id="alertaHost" role="alert" hidden><span></span><button type="button">Ligar o Tailscale</button></div>
     <section id="palco" hidden aria-label="Transmissão de tela">
       <div class="barra">
         <span class="ao-vivo">AO VIVO</span><b id="palcoNome"></b><span id="palcoInfo"></span>
@@ -365,6 +385,18 @@
   <form method="dialog">
     <label><span></span><textarea rows="2" required></textarea></label>
     <menu><button value="cancel" formnovalidate>Cancelar</button><button value="ok" class="ok">OK</button></menu>
+  </form>
+</dialog>
+<dialog id="servDlg" aria-labelledby="servTitulo">
+  <form method="dialog">
+    <h3 id="servTitulo">Servidores</h3>
+    <ul class="servlista" id="servLista"></ul>
+    <div class="campos">
+      <label>Entrar no servidor de um amigo
+        <textarea id="servConvite" rows="3" placeholder="Cole aqui o convite que ele mandou: o Limb acha o endereço e o código sozinho."></textarea></label>
+    </div>
+    <p class="error" id="servErro" role="status"></p>
+    <menu><button type="button" id="servMais">Hospedar e mais opções…</button><button value="cancel" formnovalidate>Fechar</button><button type="button" class="ok" id="servEntrar">Entrar</button></menu>
   </form>
 </dialog>
 <dialog id="audioDlg" aria-labelledby="audioTitulo">

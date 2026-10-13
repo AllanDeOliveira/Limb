@@ -10,6 +10,12 @@ const api = {
   fontesDeTela: () => ipcRenderer.invoke('limb:fontes'),
   escolherFonte: (id, comAudio) => ipcRenderer.invoke('limb:escolherFonte', String(id), !!comAudio),
   abrirConexao: () => ipcRenderer.send('limb:conexao'),
+  // trocar de servidor sem sair da janela: lista (com online/offline), troca, e entrar por convite
+  servidores: () => ipcRenderer.invoke('limb:servidores'),
+  hospedagem: () => ipcRenderer.invoke('limb:hospedagem'), // null = não está hospedando para amigos
+  ligarTailscale: () => ipcRenderer.invoke('limb:ligarTailscale'),
+  trocarServidor: (url) => ipcRenderer.invoke('limb:trocarServidor', url == null ? null : String(url)),
+  entrarPorConvite: (texto) => ipcRenderer.invoke('limb:entrarPorConvite', String(texto).slice(0, 2000)),
 };
 contextBridge.exposeInMainWorld('LimbNative', api);
 contextBridge.exposeInMainWorld('REANative', api); // servidores de antes do nome Limb (até 1.2) procuram este nome
