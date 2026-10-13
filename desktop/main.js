@@ -197,7 +197,7 @@ function criarJanela(endpoint) {
 }
 
 function mostrarJanela() {
-  if (!janela) return;
+  if (!janela || janela.isDestroyed()) return;
   if (janela.isMinimized()) janela.restore();
   janela.show();
   janela.focus();
