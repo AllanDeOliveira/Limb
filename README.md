@@ -12,7 +12,8 @@ empresa: o servidor roda no computador de um de vocês (ou numa VPS), e os dados
 - **Mensagens** com markdown (`**negrito**`, `*itálico*`, `` `código` ``, `||spoiler||`, links), respostas,
   reações, edição, @menções e contador de não lidas
 - **Busca** no estilo do Discord: `from:ana has:link before:2026-10-01 in:geral palavra`
-- **Voz** com indicador de quem está falando, mudo, surdo e "silenciar só para mim"
+- **Voz** com indicador de quem está falando, mudo, surdo, volume de cada pessoa (até 200%), volume geral,
+  escolha de microfone e saída, supressão de ruído e cancelamento de eco
 - **Compartilhar tela** (720p30, 1080p30 ou 1080p60), com o som do computador no Windows
 - **App para Windows** com notificações de menção e o servidor embutido; também funciona no navegador
 - **Contas com senha** e código de convite opcional
@@ -77,8 +78,13 @@ Uma pessoa hospeda e as outras entram no computador dela. A conexão é feita pe
    ("aceite o link de compartilhamento", "o computador dele está desligado"…). Depois é só
    **Salvar e reiniciar** e criar a conta (o código de convite já vem preenchido).
 
-O servidor só funciona enquanto o app de quem hospeda estiver aberto. Para hospedar, prefira o
-**instalador**: na versão portátil o Windows pode perguntar sobre o firewall a cada abertura.
+Quem hospeda pode fechar a janela: o Limb continua rodando no ícone perto do relógio, e os amigos seguem
+conversando enquanto o computador estiver ligado. Em **Servidor → Opções**, marque **Iniciar com o Windows**
+para o servidor subir sozinho ao ligar o PC. Para hospedar, prefira o **instalador**: na versão portátil o
+Windows pode perguntar sobre o firewall a cada abertura.
+
+Os servidores em que você já entrou ficam em **Servidor → Seus servidores**, com a bolinha verde nos que
+estão no ar: um clique troca de um para o outro.
 
 ### Como os amigos alcançam o seu computador
 

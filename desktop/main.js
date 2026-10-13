@@ -1,7 +1,7 @@
 // App desktop no mesmo desenho do Discord: casca Electron que carrega a
 // interface web de um endpoint (WEBAPP_ENDPOINT lá, `endpoint` aqui) e expõe uma ponte nativa mínima
 // (DiscordNative lá, LimbNative aqui). Sem endpoint configurado, sobe o próprio servidor embutido.
-import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, net, session, shell, utilityProcess } from 'electron';
+import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, nativeImage, net, Notification, session, shell, Tray, utilityProcess } from 'electron';
 import * as tailscale from './tailscale.js';
 import { iniciarAtualizacao } from './atualizacao.js';
 import { cpSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -35,6 +35,9 @@ const PADRAO = {
   codigoConvite: '', // se preenchido, só cria conta quem tiver o código
   iceServers: null, // null = STUN público do Google; lista própria para incluir um TURN (ver README)
   conviteRecebido: '', // código de convite do servidor do amigo: já vem preenchido no login
+  iniciarComWindows: false, // hospedando: sobe escondido na bandeja ao ligar o computador
+  historico: [], // servidores em que já entrou: [{ url, nome, codigo, ultimoUso }], mais recente primeiro
+  avisouBandeja: false, // o aviso "continua rodando perto do relógio" aparece uma vez só
 };
 const primeiraVez = !existsSync(arqConfig);
 const lerJson = (f, padrao) => { try { return { ...padrao, ...JSON.parse(readFileSync(f, 'utf8')) }; } catch { return { ...padrao }; } };
@@ -42,6 +45,27 @@ const config = lerJson(arqConfig, PADRAO);
 if (!existsSync(arqConfig)) writeFileSync(arqConfig, JSON.stringify(PADRAO, null, 2)); // deixa o arquivo pronto para editar
 // Variável de ambiente vence o arquivo, como DISCORD_WEBAPP_ENDPOINT vence settings.json no Discord
 const endpointExterno = process.env.LIMB_ENDPOINT || config.endpoint;
+// Hospedando para amigos, fechar a janela não pode derrubar o servidor deles: o app vai para a bandeja.
+// Só entrando no servidor de alguém (ou hospedando só para si), fechar continua fechando.
+const hospedandoAmigos = !endpointExterno && config.compartilharNaRede;
+const iniciouOculto = process.argv.includes('--oculto'); // aberto pelo "Iniciar com o Windows"
+const salvarConfig = () => writeFileSync(arqConfig, JSON.stringify(config, null, 2));
+// Reinicia sem o --oculto: quem pediu a troca está olhando para a tela
+const reiniciar = () => { app.relaunch({ args: process.argv.slice(1).filter((a) => a !== '--oculto') }); app.exit(0); };
+
+// Histórico: o mesmo endereço sobe para o topo; guarda os 8 mais recentes
+function lembrarServidor({ url, codigo = '', nome }) {
+  const antigo = config.historico.find((h) => h.url === url);
+  config.historico = [
+    { url, codigo: codigo || antigo?.codigo || '', nome: nome || antigo?.nome || new URL(url).host, ultimoUso: Date.now() },
+    ...config.historico.filter((h) => h.url !== url),
+  ].slice(0, 8);
+}
+// Quem já estava num servidor antes do histórico existir: ele entra na lista
+if (config.endpoint && !config.historico.some((h) => h.url === config.endpoint)) {
+  lembrarServidor({ url: config.endpoint, codigo: config.conviteRecebido });
+  salvarConfig();
+}
 
 // Um app por máquina: segunda instância só traz a janela da primeira para frente
 const unico = app.requestSingleInstanceLock();
@@ -53,7 +77,7 @@ if (endpointExterno?.startsWith('http://') && !/^http:\/\/(localhost|127\.0\.0\.
   app.commandLine.appendSwitch('unsafely-treat-insecure-origin-as-secure', new URL(endpointExterno).origin);
 }
 
-let janela = null, servidor = null, janelaConexao = null, erroConexao = null;
+let janela = null, servidor = null, janelaConexao = null, erroConexao = null, bandeja = null, saindo = false;
 
 function subirServidor() {
   return new Promise((resolve, reject) => {
@@ -93,13 +117,24 @@ function criarJanela(endpoint) {
     },
   });
   if (salvo.maximizado) janela.maximize();
-  janela.once('ready-to-show', () => janela.show());
+  // Ligou junto com o Windows: o servidor sobe, a janela fica na bandeja até alguém clicar
+  janela.once('ready-to-show', () => { if (!(iniciouOculto && hospedandoAmigos)) janela.show(); });
 
   const salvar = () => {
     if (janela.isMinimized()) return;
     writeFileSync(arqJanela, JSON.stringify({ ...janela.getNormalBounds(), maximizado: janela.isMaximized() }));
   };
-  janela.on('close', salvar);
+  janela.on('close', (e) => {
+    salvar();
+    if (!hospedandoAmigos || saindo) return;
+    e.preventDefault(); // esconder, não fechar: os amigos continuam conversando
+    janela.hide();
+    if (!config.avisouBandeja && Notification.isSupported()) {
+      new Notification({ title: 'O Limb continua rodando', body: 'Seus amigos ainda conseguem conversar. Para encerrar de vez, use o ícone do Limb perto do relógio.' }).show();
+      config.avisouBandeja = true;
+      salvarConfig();
+    }
+  });
   janela.on('focus', () => janela.flashFrame(false));
 
   // Só a origem do servidor pode pedir microfone, tela e notificação
@@ -161,6 +196,61 @@ function criarJanela(endpoint) {
   if (primeiraVez) janela.once('ready-to-show', () => abrirConexao());
 }
 
+function mostrarJanela() {
+  if (!janela) return;
+  if (janela.isMinimized()) janela.restore();
+  janela.show();
+  janela.focus();
+}
+
+// ── Bandeja (perto do relógio): só existe hospedando para amigos ────────────────────────────
+// Ícone desenhado aqui (o mesmo galho do logotipo): o projeto não tem arquivo de imagem para empacotar.
+function iconeBandeja() {
+  const t = 32, s = t / 24, px = Buffer.alloc(t * t * 4);
+  const tracos = [[8, 4, 8, 20], [8, 14.5, 16.5, 7.5], [16.5, 7.5, 14.5, 4], [16.5, 7.5, 20, 8]].map((l) => l.map((v) => v * s));
+  const distSeg = (x, y, [ax, ay, bx, by]) => {
+    const dx = bx - ax, dy = by - ay, k = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)));
+    return Math.hypot(x - ax - k * dx, y - ay - k * dy);
+  };
+  const raio = 8;
+  for (let y = 0; y < t; y++) for (let x = 0; x < t; x++) {
+    const cx = x + 0.5, cy = y + 0.5;
+    const qx = Math.min(Math.max(cx, raio), t - raio), qy = Math.min(Math.max(cy, raio), t - raio);
+    if ((cx - qx) ** 2 + (cy - qy) ** 2 > raio * raio) continue; // fora do quadrado arredondado: transparente
+    const escuro = tracos.some((l) => distSeg(cx, cy, l) < 1.5 * s);
+    px.set(escuro ? [0x05, 0x1b, 0x1d, 255] : [0x58, 0xe5, 0xf2, 255], (y * t + x) * 4); // BGRA
+  }
+  return nativeImage.createFromBitmap(px, { width: t, height: t, scaleFactor: 2 });
+}
+
+// "Iniciar com o Windows" só faz sentido no app instalado/portátil (no `npm run desktop`, abriria o Electron puro)
+const podeIniciarComWindows = app.isPackaged && process.platform === 'win32';
+function aplicarInicioComWindows() {
+  if (!podeIniciarComWindows) return;
+  app.setLoginItemSettings({
+    openAtLogin: !!config.iniciarComWindows,
+    path: process.env.PORTABLE_EXECUTABLE_FILE || process.execPath, // portátil: o .exe original, não a cópia temporária
+    args: ['--oculto'],
+  });
+}
+
+function criarBandeja() {
+  bandeja = new Tray(iconeBandeja());
+  bandeja.setToolTip(`${NOME} — hospedando para seus amigos`);
+  const menu = () => Menu.buildFromTemplate([
+    { label: `Abrir o ${NOME}`, click: mostrarJanela },
+    { label: 'Servidor…', click: () => { mostrarJanela(); abrirConexao(); } }, // a janela de servidor é modal: a principal precisa estar visível
+    { type: 'separator' },
+    { label: 'Iniciar com o Windows', type: 'checkbox', checked: !!config.iniciarComWindows, enabled: podeIniciarComWindows,
+      click: (item) => { config.iniciarComWindows = item.checked; salvarConfig(); aplicarInicioComWindows(); } },
+    { type: 'separator' },
+    { label: 'Sair (seus amigos ficam sem servidor)', click: () => { saindo = true; app.quit(); } },
+  ]);
+  bandeja.setContextMenu(menu());
+  bandeja.on('click', mostrarJanela);
+  bandeja.on('right-click', () => bandeja.setContextMenu(menu())); // checkbox sempre com o valor salvo
+}
+
 // ── Janela "Servidor": hospedar aqui ou entrar no servidor de um amigo ────────────────────────
 function abrirConexao(erro = null) {
   erroConexao = erro;
@@ -181,7 +271,34 @@ ipcMain.handle('conexao:ler', (e) => {
   if (!daConexao(e)) return null;
   const ips = Object.entries(networkInterfaces()).flatMap(([nome, lista]) => (lista ?? [])
     .filter((i) => i.family === 'IPv4' && !i.internal).map((i) => ({ nome, endereco: i.address })));
-  return { config, ips, erro: erroConexao, primeiraVez, portatil: !!process.env.PORTABLE_EXECUTABLE_DIR };
+  return { config, ips, erro: erroConexao, primeiraVez, portatil: !!process.env.PORTABLE_EXECUTABLE_DIR, podeIniciarComWindows };
+});
+// Histórico: trocar com um clique (url null = este computador), esquecer, e o "Iniciar com o Windows"
+ipcMain.handle('conexao:trocar', (e, url) => {
+  if (!daConexao(e)) return { erro: 'negado' };
+  if (url == null) { config.endpoint = null; config.conviteRecebido = ''; }
+  else {
+    const h = config.historico.find((x) => x.url === url);
+    if (!h) return { erro: 'Esse servidor não está no histórico.' };
+    lembrarServidor(h);
+    Object.assign(config, { endpoint: h.url, conviteRecebido: h.codigo });
+  }
+  salvarConfig();
+  reiniciar();
+  return {};
+});
+ipcMain.handle('conexao:esquecer', (e, url) => {
+  if (!daConexao(e)) return null;
+  config.historico = config.historico.filter((h) => h.url !== url);
+  salvarConfig();
+  return config.historico;
+});
+ipcMain.handle('conexao:iniciarComWindows', (e, ligado) => {
+  if (!daConexao(e)) return null;
+  config.iniciarComWindows = !!ligado;
+  salvarConfig();
+  aplicarInicioComWindows();
+  return config.iniciarComWindows;
 });
 ipcMain.handle('conexao:tailscale', (e) => (daConexao(e) ? tailscale.status() : null));
 ipcMain.handle('conexao:tailscaleLigar', async (e) => {
@@ -202,7 +319,7 @@ ipcMain.handle('conexao:testar', async (e, url) => {
   } catch {
     // Explica o motivo mais provável, olhando o Tailscale
     const host = new URL(origem).hostname;
-    if (!/^100\./.test(host)) return { ok: false, erro: 'Sem resposta. Confira o endereço e se o app do seu amigo está aberto.' };
+    if (!/^100\./.test(host)) return { ok: false, erro: 'Sem resposta. Confira o endereço e se o computador do seu amigo está ligado com o Limb rodando.' };
     const st = await tailscale.status();
     if (!st.instalado) return { ok: false, erro: 'Esse endereço é do Tailscale: instale e entre no Tailscale (acima).' };
     if (st.estado !== 'Running') return { ok: false, erro: 'Seu Tailscale está desligado: ligue no passo 1, acima.' };
@@ -210,10 +327,10 @@ ipcMain.handle('conexao:testar', async (e, url) => {
     const par = st.pares.find((p) => p.ip === host);
     if (!par) return { ok: false, erro: 'Você ainda não tem acesso ao computador do seu amigo: abra o link de compartilhamento que ele mandou e clique em aceitar.' };
     if (!par.online) return { ok: false, erro: `O computador do seu amigo (${par.nome}) está desligado ou sem Tailscale.` };
-    return { ok: false, erro: `O computador dele (${par.nome}) está online, mas o servidor não respondeu: o app dele está aberto, hospedando, com "Deixar outros computadores entrarem" marcado? O firewall dele pode ter bloqueado o app.` };
+    return { ok: false, erro: `O computador dele (${par.nome}) está online, mas o servidor não respondeu: o Limb dele está rodando (pode estar só no ícone perto do relógio), hospedando, com "Deixar outros computadores entrarem" marcado? O firewall dele pode ter bloqueado o app.` };
   }
 });
-ipcMain.handle('conexao:salvar', (e, novo) => {
+ipcMain.handle('conexao:salvar', async (e, novo) => {
   if (!daConexao(e)) return { erro: 'negado' };
   const porta = Math.trunc(Number(novo.porta));
   if (!(porta >= 1024 && porta <= 65535)) return { erro: 'Porta precisa estar entre 1024 e 65535.' };
@@ -226,20 +343,27 @@ ipcMain.handle('conexao:salvar', (e, novo) => {
     endpoint, porta, compartilharNaRede: !!novo.compartilharNaRede, codigoConvite: String(novo.codigoConvite ?? '').slice(0, 100),
     conviteRecebido: endpoint ? String(novo.conviteRecebido ?? '').slice(0, 100) : '',
   });
-  writeFileSync(arqConfig, JSON.stringify(config, null, 2));
-  app.relaunch();
-  app.exit(0);
+  if (endpoint) {
+    // nome do amigo no Tailscale ("pc-do-bruno"), que diz mais do que um 100.x.x.x
+    const host = new URL(endpoint).hostname;
+    const nome = await tailscale.status().then((st) => st.pares?.find((p) => p.ip === host)?.nome).catch(() => null);
+    lembrarServidor({ url: endpoint, codigo: config.conviteRecebido, nome });
+  }
+  salvarConfig();
+  reiniciar();
   return {};
 });
 
-app.on('second-instance', () => { if (janela) { if (janela.isMinimized()) janela.restore(); janela.focus(); } });
-app.on('window-all-closed', () => app.quit());
+app.on('second-instance', mostrarJanela); // abrir o atalho de novo traz a janela, mesmo escondida na bandeja
+app.on('window-all-closed', () => { if (!bandeja) app.quit(); });
+app.on('before-quit', () => { saindo = true; });
 app.on('quit', () => servidor?.kill());
 
 app.whenReady().then(async () => {
   if (!unico) return;
   try {
     criarJanela(endpointExterno || await subirServidor());
+    if (hospedandoAmigos) { criarBandeja(); aplicarInicioComWindows(); }
   } catch (e) {
     // não fecha o app: deixa trocar a porta ou entrar no servidor de outra pessoa
     abrirConexao(`Não foi possível iniciar o servidor: ${e.message}`);

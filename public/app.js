@@ -373,6 +373,7 @@ const ICONES = {
   editar: 'M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z',
   apagar: 'M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2',
   marca: 'M8 3v18M8 15c0-4 3-6.5 8.5-7.5M16.5 7.5 14.5 4M16.5 7.5l3.5.5',
+  ajustes: 'M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6',
 };
 function icone(nomeIcone, tam = 20) {
   const SVG = 'http://www.w3.org/2000/svg';
@@ -430,7 +431,8 @@ function agendarRender() {
 
 // Sair e trocar de servidor: sempre visíveis, até antes de conectar (senão uma falha deixa a janela sem saída)
 const botoesConta = () => [
-  ponte()?.abrirConexao && botaoIcone('servidor', 'Hospedar ou entrar no servidor de um amigo', { onclick: () => ponte().abrirConexao() }),
+  botaoIcone('ajustes', 'Voz e áudio', { onclick: abrirAjustesAudio }),
+  ponte()?.abrirConexao && botaoIcone('servidor', 'Trocar de servidor', { onclick: () => ponte().abrirConexao() }),
   botaoIcone('sair', 'Sair da conta', { onclick: sair }),
 ];
 const statusConexao = () => (store.conn === 'conectado' ? 'online' : store.conn);
@@ -524,12 +526,14 @@ function renderCanalVoz(c) {
       icone('voz', 18), h('span', { textContent: c.name })),
     dentro.map((s) => h('div', {
       className: `vuser${store.speaking.has(s.user_id) ? ' speaking' : ''}`,
-      // clicar em outra pessoa silencia só para você (setLocalMute)
-      title: s.user_id === store.me.id ? '' : voz.mutadoLocal(s.user_id) ? 'Reativar áudio desta pessoa' : 'Silenciar só para mim',
-      onclick: () => { if (s.user_id !== store.me.id) voz.alternarMutoLocal(s.user_id); },
+      // clicar em outra pessoa abre o volume dela (e o "silenciar só para mim")
+      title: s.user_id === store.me.id ? '' : `Volume de ${nome(s.user_id)}`,
+      onclick: () => { if (s.user_id !== store.me.id) abrirVolumePessoa(s.user_id); },
     },
       avatar(s.user_id),
       h('span', { className: 'vname', textContent: nome(s.user_id) }),
+      s.user_id !== store.me.id && voz.ajustes.volumeDe(s.user_id) !== 1
+        && h('small', { className: 'vvol', textContent: `${Math.round(voz.ajustes.volumeDe(s.user_id) * 100)}%` }),
       s.self_stream && h('button', {
         className: 'ao-vivo', textContent: 'AO VIVO', title: `Assistir a tela de ${nome(s.user_id)}`,
         onclick: (e) => { e.stopPropagation(); assistir(s.user_id); },
@@ -541,6 +545,49 @@ function renderCanalVoz(c) {
     )),
   );
 }
+
+// ── Voz e áudio ─────────────────────────────────────────────────────────────
+// Ajustes valem na hora (sem "salvar") e ficam guardados neste computador.
+const audioDlg = $('#audioDlg'), pessoaDlg = $('#pessoaDlg');
+const pct = (x) => `${Math.round(x * 100)}%`;
+async function abrirAjustesAudio() {
+  const p = voz.ajustes.prefs(), f = audioDlg.querySelector('form');
+  // Sem permissão de microfone, o navegador esconde os nomes dos dispositivos
+  const dispositivos = await navigator.mediaDevices?.enumerateDevices().catch(() => []) ?? [];
+  const opcoes = (tipo, atual) => [h('option', { value: '', textContent: 'Padrão do sistema' }),
+    ...dispositivos.filter((d) => d.kind === tipo && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications')
+      .map((d, i) => h('option', { value: d.deviceId, textContent: d.label || `${tipo === 'audioinput' ? 'Microfone' : 'Saída'} ${i + 1}`, selected: d.deviceId === atual }))];
+  trocar(f.entrada, opcoes('audioinput', p.entrada));
+  trocar(f.saida, opcoes('audiooutput', p.saida));
+  $('#campoSaida').hidden = !voz.ajustes.escolheSaida;
+  $('#semNomes').hidden = dispositivos.some((d) => d.label);
+  f.volumeGeral.value = p.volumeGeral;
+  $('#volGeralValor').textContent = pct(p.volumeGeral);
+  f.ruido.checked = p.ruido;
+  f.eco.checked = p.eco;
+  audioDlg.showModal();
+}
+{
+  const f = audioDlg.querySelector('form');
+  f.entrada.addEventListener('change', () => voz.ajustes.definirEntrada(f.entrada.value));
+  f.saida.addEventListener('change', () => voz.ajustes.definirSaida(f.saida.value));
+  f.volumeGeral.addEventListener('input', () => { voz.ajustes.definirVolumeGeral(f.volumeGeral.value); $('#volGeralValor').textContent = pct(f.volumeGeral.value); });
+  f.ruido.addEventListener('change', () => voz.ajustes.definirProcessamento({ ruido: f.ruido.checked }));
+  f.eco.addEventListener('change', () => voz.ajustes.definirProcessamento({ eco: f.eco.checked }));
+}
+
+let pessoaAtual = null;
+function abrirVolumePessoa(userId) {
+  pessoaAtual = userId;
+  $('#pessoaNome').textContent = nome(userId);
+  $('#pessoaVol').value = voz.ajustes.volumeDe(userId);
+  $('#pessoaValor').textContent = pct(voz.ajustes.volumeDe(userId));
+  $('#pessoaMudo').checked = voz.mutadoLocal(userId);
+  pessoaDlg.showModal();
+}
+$('#pessoaVol').addEventListener('input', (e) => { voz.ajustes.definirVolume(pessoaAtual, e.target.value); $('#pessoaValor').textContent = pct(e.target.value); });
+$('#pessoaMudo').addEventListener('change', (e) => { if (e.target.checked !== voz.mutadoLocal(pessoaAtual)) voz.alternarMutoLocal(pessoaAtual); });
+$('#pessoaPadrao').addEventListener('click', () => { voz.ajustes.definirVolume(pessoaAtual, 1); $('#pessoaVol').value = 1; $('#pessoaValor').textContent = '100%'; });
 
 function renderPainelVoz() {
   const a = voz.atual();

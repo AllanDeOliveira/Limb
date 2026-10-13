@@ -9,4 +9,7 @@ contextBridge.exposeInMainWorld('conexao', {
   tailscaleLigar: () => ipcRenderer.invoke('conexao:tailscaleLigar'),
   abrirCompartilhar: () => ipcRenderer.invoke('conexao:abrirCompartilhar'),
   copiar: (texto) => ipcRenderer.invoke('conexao:copiar', String(texto)),
+  trocar: (url) => ipcRenderer.invoke('conexao:trocar', url == null ? null : String(url)), // null = este computador
+  esquecer: (url) => ipcRenderer.invoke('conexao:esquecer', String(url)),
+  iniciarComWindows: (ligado) => ipcRenderer.invoke('conexao:iniciarComWindows', !!ligado),
 });

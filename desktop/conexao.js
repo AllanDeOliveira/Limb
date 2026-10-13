@@ -134,6 +134,39 @@ $('salvar').addEventListener('click', async () => {
   if (r?.erro) { $('erro').hidden = false; $('erro').textContent = r.erro; }
 });
 
+// ── Seus servidores (histórico) ──────────────────────────────────────────────
+// "Este computador" sempre aparece; os outros, do mais recente para o mais antigo, com status testado na hora
+function desenharLista(historico, atual) {
+  const quando = (t) => (t ? new Date(t).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) : '');
+  const itens = [{ url: null, nome: 'Este computador', detalhe: 'Hospedar aqui' }, ...historico.map((h) => ({ ...h, detalhe: `${h.url} · usado em ${quando(h.ultimoUso)}` }))];
+  const lista = $('lista');
+  lista.replaceChildren(...itens.map((h) => {
+    const eAtual = h.url === atual;
+    const li = document.createElement('li');
+    li.className = `srv${eAtual ? ' atual' : ''}`;
+    const bola = Object.assign(document.createElement('span'), { className: 'bola', title: 'Verificando…' });
+    const info = document.createElement('span');
+    info.className = 'info';
+    info.append(Object.assign(document.createElement('b'), { textContent: h.nome }), Object.assign(document.createElement('small'), { className: 'mut', textContent: h.detalhe }));
+    li.append(bola, info);
+    if (eAtual) li.append(Object.assign(document.createElement('span'), { className: 'tag', textContent: 'ATUAL' }));
+    else {
+      const entrar = Object.assign(document.createElement('button'), { type: 'button', className: 'ok', textContent: 'Entrar' });
+      entrar.addEventListener('click', async () => { entrar.disabled = true; entrar.textContent = 'Reiniciando…'; const r = await window.conexao.trocar(h.url); if (r?.erro) { entrar.disabled = false; entrar.textContent = 'Entrar'; $('erro').hidden = false; $('erro').textContent = r.erro; } });
+      li.append(entrar);
+    }
+    if (h.url && !eAtual) {
+      const x = Object.assign(document.createElement('button'), { type: 'button', className: 'x', textContent: '✕', title: 'Esquecer este servidor', ariaLabel: `Esquecer ${h.nome}` });
+      x.addEventListener('click', async () => desenharLista(await window.conexao.esquecer(h.url), atual));
+      li.append(x);
+    }
+    // este computador só tem servidor rodando quando é o atual; os outros respondem (ou não) a /api/info
+    if (!h.url) { bola.className = `bola${eAtual ? ' on' : ''}`; bola.title = eAtual ? 'No ar' : 'Sobe quando você escolher hospedar aqui'; }
+    else window.conexao.testar(h.url).then((r) => { bola.className = `bola ${r.ok ? 'on' : 'off'}`; bola.title = r.ok ? 'No ar' : r.erro; });
+    return li;
+  }));
+}
+
 // ── Início ───────────────────────────────────────────────────────────────────
 window.conexao.ler().then((d) => {
   ({ config: cfg, ips } = d);
@@ -146,6 +179,10 @@ window.conexao.ler().then((d) => {
   $('porta').value = cfg.porta;
   $('codigo').value = cfg.codigoConvite ?? '';
   $('compartilhar').checked = !!cfg.compartilharNaRede;
+  $('iniciarComWindows').checked = !!cfg.iniciarComWindows;
+  $('campoIniciar').hidden = !d.podeIniciarComWindows;
+  $('iniciarComWindows').addEventListener('change', (e) => window.conexao.iniciarComWindows(e.target.checked));
+  desenharLista(cfg.historico ?? [], cfg.endpoint ?? null);
   if (cfg.endpoint) $('colar').value = [cfg.endpoint, cfg.conviteRecebido && `Código: ${cfg.conviteRecebido}`].filter(Boolean).join('\n');
   atualizarTs();
   if (cfg.endpoint) escolher('entrar');

@@ -42,6 +42,18 @@
   button:disabled { opacity: .5; cursor: default; }
   .acoes { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
   #resultado.bom { color: var(--ok); } #resultado.ruim { color: var(--err); }
+  /* seus servidores (histórico) */
+  .lista { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+  .srv { display: flex; align-items: center; gap: 10px; background: var(--bg2); border: 1px solid var(--linha); border-radius: 10px; padding: 8px 8px 8px 12px; }
+  .srv.atual { border-color: var(--acc); }
+  .srv .bola { width: 10px; height: 10px; border-radius: 50%; background: var(--mut); flex: none; }
+  .srv .bola.on { background: var(--ok); } .srv .bola.off { background: var(--err); }
+  .srv .info { flex: 1; min-width: 0; display: grid; }
+  .srv .info b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .srv .info small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .srv .tag { font-size: 12px; font-weight: 700; color: var(--acc); }
+  .srv .x { background: none; padding: 6px 8px; color: var(--mut); }
+  .srv .x:hover { color: var(--err); }
   details summary { cursor: pointer; color: var(--mut); }
   details[open] summary { margin-bottom: 8px; }
 </style>
@@ -50,6 +62,12 @@
 <h1 id="titulo">Servidor</h1>
 <p class="mut" id="subtitulo">Hospede uma conversa no seu computador ou entre na de um amigo.</p>
 <div class="erro" id="erro" hidden></div>
+
+<section class="caixa" id="servidores">
+  <h2>Seus servidores</h2>
+  <ul class="lista" id="lista"></ul>
+  <small>Cada servidor tem as próprias contas e conversas. Verde = no ar agora.</small>
+</section>
 
 <section class="caixa">
   <h2>1. Tailscale</h2>
@@ -76,6 +94,7 @@
       <div class="linha"><button type="button" id="copiar">Copiar convite</button><span id="copiado" class="mut" role="status"></span></div>
     </li>
     <li><b>Clique em “Salvar e reiniciar”.</b> <small>Se o Windows perguntar sobre o firewall, clique em Permitir.</small></li>
+    <li><b>Pode fechar a janela:</b> o Limb continua rodando perto do relógio e seus amigos seguem conversando. <small>Só o computador precisa ficar ligado.</small></li>
   </ol>
   <details style="margin-top: 12px">
     <summary>Opções</summary>
@@ -84,6 +103,7 @@
         <input type="text" id="codigo" maxlength="100" autocomplete="off"></label>
       <label class="campo">Porta <input type="number" id="porta" min="1024" max="65535"></label>
       <label><input type="checkbox" id="compartilhar"> Deixar outros computadores entrarem</label>
+      <label id="campoIniciar"><input type="checkbox" id="iniciarComWindows"> Iniciar com o Windows <small>(o servidor sobe escondido, perto do relógio)</small></label>
       <small id="enderecos"></small>
     </div>
   </details>

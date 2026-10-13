@@ -245,6 +245,15 @@
   #telaDlg select { background: var(--bg0); border: 1px solid var(--linha); border-radius: 6px; padding: 6px; margin-left: 6px; }
   #telaDlg[data-desktop] #telaOk { display: none; } /* no app desktop, clicar na fonte já compartilha */
   #pedir { width: min(440px, calc(100vw - 32px)); }
+  #audioDlg, #pessoaDlg { width: min(420px, calc(100vw - 32px)); }
+  .campos { display: grid; gap: 14px; }
+  .campos label { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
+  .campos label.check { display: flex; align-items: center; gap: 8px; font-weight: 400; }
+  .campos select { background: var(--bg0); border: 1px solid var(--linha); border-radius: 8px; padding: 8px; font-weight: 400; }
+  .campos .rotulo { display: flex; justify-content: space-between; }
+  .campos .rotulo span:last-child { color: var(--acc-texto); font-variant-numeric: tabular-nums; }
+  .campos input[type=range] { width: 100%; }
+  .vuser .vvol { color: var(--acc-texto); font-size: 11px; font-variant-numeric: tabular-nums; }
   #pedir label { display: grid; gap: 8px; font-weight: 600; }
   #pedir textarea { background: var(--bg0); border: 1px solid var(--linha); border-radius: 8px; padding: 10px; resize: vertical; font-weight: 400; }
   #pedir textarea:focus { border-color: var(--acc); outline: none; }
@@ -356,6 +365,33 @@
   <form method="dialog">
     <label><span></span><textarea rows="2" required></textarea></label>
     <menu><button value="cancel" formnovalidate>Cancelar</button><button value="ok" class="ok">OK</button></menu>
+  </form>
+</dialog>
+<dialog id="audioDlg" aria-labelledby="audioTitulo">
+  <form method="dialog">
+    <h3 id="audioTitulo">Voz e áudio</h3>
+    <div class="campos">
+      <label>Microfone <select name="entrada"></select></label>
+      <label id="campoSaida">Saída de áudio <select name="saida"></select></label>
+      <p class="dica" id="semNomes">Os nomes dos dispositivos aparecem depois que você entra num canal de voz uma vez.</p>
+      <label><span class="rotulo"><span>Volume da chamada</span><span id="volGeralValor"></span></span>
+        <input type="range" name="volumeGeral" min="0" max="1" step="0.05"></label>
+      <label class="check"><input type="checkbox" name="ruido"> Supressão de ruído <small class="dica">(teclado, ventilador)</small></label>
+      <label class="check"><input type="checkbox" name="eco"> Cancelamento de eco <small class="dica">(desligue se usar fone e a voz falhar)</small></label>
+    </div>
+    <p class="dica" style="margin-top: 14px">Volume de uma pessoa só: clique no nome dela dentro do canal de voz.</p>
+    <menu><button value="ok" class="ok">Pronto</button></menu>
+  </form>
+</dialog>
+<dialog id="pessoaDlg" aria-labelledby="pessoaNome">
+  <form method="dialog">
+    <h3 id="pessoaNome"></h3>
+    <div class="campos">
+      <label><span class="rotulo"><span>Volume para você</span><span id="pessoaValor"></span></span>
+        <input type="range" id="pessoaVol" min="0" max="2" step="0.05"></label>
+      <label class="check"><input type="checkbox" id="pessoaMudo"> Silenciar só para mim</label>
+    </div>
+    <menu><button type="button" id="pessoaPadrao">Voltar a 100%</button><button value="ok" class="ok">Pronto</button></menu>
   </form>
 </dialog>
 <dialog id="telaDlg" aria-labelledby="telaTitulo">

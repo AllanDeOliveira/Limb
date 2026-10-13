@@ -9,6 +9,13 @@ const VOP = { IDENTIFY: 0, SELECT_PROTOCOL: 1, READY: 2, HEARTBEAT: 3, SESSION_D
   HEARTBEAT_ACK: 6, HELLO: 8, CLIENTS_CONNECT: 11, VIDEO: 12, CLIENT_DISCONNECT: 13, PEER_SIGNAL: 100 };
 const LIMIAR_FALA = 0.02, SEGURA_FALA_MS = 300;
 
+// Preferências de áudio deste computador (não vão para o servidor)
+const CHAVE_PREFS = 'limb.audio';
+const PREFS_PADRAO = { volumeGeral: 1, volumes: {}, entrada: '', saida: '', ruido: true, eco: true };
+function lerPrefs() {
+  try { return { ...PREFS_PADRAO, ...JSON.parse(localStorage.getItem(CHAVE_PREFS) ?? '{}') }; } catch { return { ...PREFS_PADRAO }; }
+}
+
 // Qualidades do "Go Live". Malha P2P: quem transmite envia uma cópia para cada pessoa na sala.
 export const QUALIDADES = {
   '720p30': { altura: 720, fps: 30, bitrate: 2_500_000, nome: '720p · 30 fps' },
@@ -20,6 +27,13 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
   // setLocalMute do discord_voice.node: silenciar alguém só para mim; vale entre conexões
   const mutadosLocal = new Set();
   let v = null; // conexão atual
+  const prefs = lerPrefs();
+  const salvarPrefs = () => { try { localStorage.setItem(CHAVE_PREFS, JSON.stringify(prefs)); } catch {} };
+  // "ideal", não "exact": microfone escolhido que foi desconectado cai no padrão em vez de falhar
+  const restricoes = () => ({
+    echoCancellation: prefs.eco, noiseSuppression: prefs.ruido, autoGainControl: true,
+    ...(prefs.entrada ? { deviceId: { ideal: prefs.entrada } } : {}),
+  });
 
   const enviar = (op, d) => { if (v?.ws?.readyState === 1) v.ws.send(JSON.stringify({ op, d })); };
   const estado = () => ({ guild_id: v.guildId, channel_id: v.channelId, self_mute: v.mute, self_deaf: v.deaf, self_stream: !!v.tela });
@@ -36,7 +50,7 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
   async function entrarAgora(canal) {
     let stream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: restricoes() });
     } catch (e) {
       return alert(`Microfone indisponível: ${e.message}`);
     }
@@ -44,6 +58,8 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
     if (v) sair();
     v = { channelId: canal.id, guildId: canal.guild_id, stream, ws: null, ssrc: 0, status: 'conectando…', ice: [],
       mute: false, deaf: false, pares: new Map(), audios: new Map(),
+      saida: criarSaida(), // áudio dos outros: cada pessoa → ganho próprio → volume geral → alto-falante
+      ganhos: new Map(), // userId → { fonte, ganho }
       tela: null, // minha transmissão: { stream, qualidade }
       telasIds: new Map(), // userId → id do stream de tela que essa pessoa anunciou (op 12)
       telas: new Map(), // userId → MediaStream da tela recebida
@@ -67,6 +83,7 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
     c.ws?.close(1000);
     c.pares.forEach((p) => p.pc.close());
     c.audios.forEach((a) => { a.srcObject = null; });
+    c.saida.ctx.close().catch(() => {});
     c.stream.getTracks().forEach((t) => t.stop());
     c.tela?.stream.getTracks().forEach((t) => t.stop());
     c.escuta?.stop();
@@ -82,9 +99,25 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
   function aplicar(patch) {
     Object.assign(v, patch);
     v.stream.getAudioTracks().forEach((t) => { t.enabled = !v.mute; });
-    v.audios.forEach((a, id) => { a.muted = v.deaf || mutadosLocal.has(id); });
+    aplicarGanhos();
     enviarGateway({ op: 4, d: estado() });
     avisar();
+  }
+
+  // ── Saída de áudio ────────────────────────────────────────────────────────
+  // <audio>.volume para em 100%; o ganho do WebAudio deixa aumentar quem fala baixo (até 200%)
+  function criarSaida() {
+    const ctx = new AudioContext();
+    ctx.resume().catch(() => {});
+    const geral = ctx.createGain();
+    geral.connect(ctx.destination);
+    if (prefs.saida && ctx.setSinkId) ctx.setSinkId(prefs.saida).catch(() => {}); // dispositivo sumiu: fica no padrão
+    return { ctx, geral };
+  }
+  function aplicarGanhos() {
+    if (!v) return;
+    v.saida.geral.gain.value = v.deaf ? 0 : prefs.volumeGeral;
+    v.ganhos.forEach(({ ganho }, id) => { ganho.gain.value = mutadosLocal.has(id) ? 0 : (prefs.volumes[id] ?? 1); });
   }
 
   // Gateway principal mandou o token: abre o gateway de voz
@@ -155,11 +188,18 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
     pc.ontrack = ({ streams: [s] }) => {
       if (!s) return;
       if (s.id === v.telasIds.get(id)) { v.telas.set(id, s); avisar(); return; } // tela: só toca quando alguém assiste
+      // O Chromium só entrega áudio remoto do WebRTC ao WebAudio se o stream também estiver num elemento
+      // tocando: o <audio> fica mudo e o som sai pelo ganho
       const a = v.audios.get(id) ?? new Audio();
       a.srcObject = s;
-      a.muted = v.deaf || mutadosLocal.has(id);
+      a.muted = true;
       a.play().catch(() => {});
       v.audios.set(id, a);
+      v.ganhos.get(id)?.fonte.disconnect();
+      const fonte = v.saida.ctx.createMediaStreamSource(s), ganho = v.saida.ctx.createGain();
+      fonte.connect(ganho).connect(v.saida.geral);
+      v.ganhos.set(id, { fonte, ganho });
+      aplicarGanhos();
     };
     return p;
   }
@@ -188,6 +228,8 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
     v?.pares.delete(id);
     const a = v?.audios.get(id);
     if (a) { a.srcObject = null; v.audios.delete(id); }
+    v?.ganhos.get(id)?.fonte.disconnect();
+    v?.ganhos.delete(id);
     v?.telas.delete(id);
     v?.telasIds.delete(id);
     if (store.assistindo === id) store.assistindo = null;
@@ -245,12 +287,9 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
     ctx.resume().catch(() => {}); // criado depois de um await: pode nascer suspenso
     const an = ctx.createAnalyser();
     an.fftSize = 512;
-    // Analisa um clone: mudo desativa a faixa enviada, e faixa desativada entrega silêncio —
-    // sem o clone, "falando enquanto mudo" nunca dispararia
-    const escuta = v.stream.getAudioTracks()[0].clone();
-    ctx.createMediaStreamSource(new MediaStream([escuta])).connect(an);
     v.ctx = ctx;
-    v.escuta = escuta;
+    v.analisador = an;
+    escutarMicrofone();
     const amostra = new Float32Array(an.fftSize);
     let falando = false, ultimaVoz = 0;
     v.timers.push(setInterval(() => {
@@ -271,15 +310,65 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId }) {
     }, 100));
   }
 
-  function alternarMutoLocal(userId) {
-    mutadosLocal.has(userId) ? mutadosLocal.delete(userId) : mutadosLocal.add(userId);
-    const a = v?.audios.get(userId);
-    if (a) a.muted = v.deaf || mutadosLocal.has(userId);
+  // Analisa um clone: mudo desativa a faixa enviada, e faixa desativada entrega silêncio —
+  // sem o clone, "falando enquanto mudo" nunca dispararia
+  function escutarMicrofone() {
+    v.fonteEscuta?.disconnect();
+    v.escuta?.stop();
+    v.escuta = v.stream.getAudioTracks()[0].clone();
+    v.fonteEscuta = v.ctx.createMediaStreamSource(new MediaStream([v.escuta]));
+    v.fonteEscuta.connect(v.analisador);
+  }
+
+  // Trocar microfone ou processamento no meio da chamada: abre o novo e troca a faixa em cada conexão,
+  // sem renegociar (replaceTrack)
+  async function reabrirMicrofone() {
+    if (!v) return;
+    const conexao = v;
+    const novo = await navigator.mediaDevices.getUserMedia({ audio: restricoes() });
+    if (v !== conexao) { novo.getTracks().forEach((t) => t.stop()); return; } // saiu da voz enquanto abria
+    const [faixa] = novo.getAudioTracks();
+    faixa.enabled = !v.mute;
+    const antigas = v.stream.getAudioTracks();
+    await Promise.all([...v.pares.values()].map((p) => p.pc.getSenders().find((s) => antigas.includes(s.track))?.replaceTrack(faixa)));
+    antigas.forEach((t) => t.stop());
+    v.stream = novo;
+    escutarMicrofone();
     avisar();
   }
 
+  function alternarMutoLocal(userId) {
+    mutadosLocal.has(userId) ? mutadosLocal.delete(userId) : mutadosLocal.add(userId);
+    aplicarGanhos();
+    avisar();
+  }
+
+  // ── Ajustes (página "Voz e áudio" e volume por pessoa) ─────────────────────
+  const ajustes = {
+    prefs: () => ({ ...prefs, volumes: { ...prefs.volumes } }),
+    volumeDe: (userId) => prefs.volumes[userId] ?? 1,
+    definirVolume(userId, valor) {
+      const x = Math.min(2, Math.max(0, Number(valor) || 0));
+      if (x === 1) delete prefs.volumes[userId]; else prefs.volumes[userId] = x; // 100% não precisa ficar salvo
+      salvarPrefs(); aplicarGanhos(); avisar();
+    },
+    definirVolumeGeral(valor) { prefs.volumeGeral = Math.min(1, Math.max(0, Number(valor) || 0)); salvarPrefs(); aplicarGanhos(); },
+    async definirSaida(id) {
+      prefs.saida = String(id ?? ''); salvarPrefs();
+      if (v?.saida.ctx.setSinkId) await v.saida.ctx.setSinkId(prefs.saida).catch((e) => alert(`Não foi possível usar essa saída: ${e.message}`));
+    },
+    async definirEntrada(id) { prefs.entrada = String(id ?? ''); salvarPrefs(); await reabrirMicrofone().catch((e) => alert(`Não foi possível usar esse microfone: ${e.message}`)); },
+    async definirProcessamento({ ruido, eco }) {
+      if (ruido != null) prefs.ruido = !!ruido;
+      if (eco != null) prefs.eco = !!eco;
+      salvarPrefs();
+      await reabrirMicrofone().catch(() => {});
+    },
+    escolheSaida: typeof AudioContext !== 'undefined' && 'setSinkId' in AudioContext.prototype,
+  };
+
   return {
-    entrar, sair, alternarMudo, alternarSurdo, servidorPronto, alternarMutoLocal, compartilharTela, pararTela,
+    entrar, sair, alternarMudo, alternarSurdo, servidorPronto, alternarMutoLocal, compartilharTela, pararTela, ajustes,
     mutadoLocal: (userId) => mutadosLocal.has(userId),
     // tela de alguém (ou a minha, como prévia) para o palco; null se não houver
     tela: (userId) => (userId === store.me?.id ? v?.tela?.stream : v?.telas.get(userId)) ?? null,
