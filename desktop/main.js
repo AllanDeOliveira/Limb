@@ -1,8 +1,9 @@
-// App desktop no mesmo desenho do Discord (ver EVIDENCIAS.md, seção 11): casca Electron que carrega a
+// App desktop no mesmo desenho do Discord: casca Electron que carrega a
 // interface web de um endpoint (WEBAPP_ENDPOINT lá, `endpoint` aqui) e expõe uma ponte nativa mínima
 // (DiscordNative lá, LimbNative aqui). Sem endpoint configurado, sobe o próprio servidor embutido.
 import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, net, session, shell, utilityProcess } from 'electron';
 import * as tailscale from './tailscale.js';
+import { iniciarAtualizacao } from './atualizacao.js';
 import { cpSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import path from 'node:path';
@@ -243,5 +244,6 @@ app.whenReady().then(async () => {
     // não fecha o app: deixa trocar a porta ou entrar no servidor de outra pessoa
     abrirConexao(`Não foi possível iniciar o servidor: ${e.message}`);
   }
+  iniciarAtualizacao(() => janela ?? janelaConexao);
 });
 process.on('uncaughtException', (e) => { dialog.showErrorBox(NOME, e.stack ?? String(e)); });

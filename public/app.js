@@ -42,8 +42,14 @@ const usuarioPorNome = (n) => { for (const u of store.users.values()) if (u.user
 
 // ── Dispatcher + stores ─────────────────────────────────────────────────────
 const handlers = [];
+// Ações que mudam o que a lista de mensagens mostra. As outras (fala na chamada, digitando, presença…)
+// redesenham o resto da tela sem reconstruir as mensagens.
+const MUDA_MENSAGENS = new Set(['READY', 'LOAD_MESSAGES_SUCCESS', 'MESSAGE_CREATE', 'MESSAGE_SEND_FAILED', 'MESSAGE_UPDATE',
+  'MESSAGE_DELETE', 'MESSAGE_REACTION_ADD', 'MESSAGE_REACTION_REMOVE', 'USER_CREATE', 'PRESENCE_UPDATE']);
+let versaoMensagens = 0;
 function dispatch(action) {
   for (const h of handlers) h[action.type]?.(action);
+  if (MUDA_MENSAGENS.has(action.type)) versaoMensagens++;
   agendarRender();
 }
 
@@ -667,9 +673,15 @@ function renderMensagem(m, ant) {
   );
 }
 
+let chaveMensagens = '';
 function renderMensagens() {
   const box = $('#messages');
   const ch = store.messages.get(store.channelId);
+  // Nada mudou na lista: não reconstrói (a fala na chamada redesenha a tela várias vezes por segundo,
+  // e reconstruir também fecharia spoilers abertos e a seleção de texto)
+  const chave = [store.channelId, versaoMensagens, msgSel, canalAtual()?.name, ch?.hasMore, store.me?.id].join('|');
+  if (chave === chaveMensagens && !grudarNoFim && !manterTopo) return;
+  chaveMensagens = chave;
   const noFim = grudarNoFim || box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   const alturaAntes = box.scrollHeight, topoAntes = box.scrollTop;
   const lista = ch?.list ?? [];

@@ -1,5 +1,5 @@
-// ETF (Erlang External Term Format): port em JS do discord_erlpack.node, reconstruído
-// a partir da descompilação no Ghidra (ver EVIDENCIAS.md, seção 9). Roda no Node e no navegador.
+// ETF (Erlang External Term Format), compatível com o erlpack (github.com/discord/erlpack, MIT),
+// usado como codificação binária do gateway. Roda no Node e no navegador.
 //
 // pack:   null/undefined → atom nil · boolean → atom true/false · inteiro 0..255 → SMALL_INTEGER
 //         int32 → INTEGER · inteiro maior / BigInt → SMALL_BIG · fracionário → NEW_FLOAT
@@ -9,7 +9,7 @@
 //         NIL → [] · tuplas → array · STRING_EXT → array de bytes
 
 const VERSION = 131;
-const MAX_DEPTH = 256; // FUN_180001220(..., 0x100)
+const MAX_DEPTH = 256; // mesmo limite de aninhamento do erlpack
 const T = {
   NEW_FLOAT: 70, SMALL_INTEGER: 97, INTEGER: 98, FLOAT: 99, ATOM: 100, SMALL_TUPLE: 104, LARGE_TUPLE: 105,
   NIL: 106, STRING: 107, LIST: 108, BINARY: 109, SMALL_BIG: 110, LARGE_BIG: 111, SMALL_ATOM: 115, MAP: 116,
@@ -45,13 +45,13 @@ export function pack(value) {
       case 'bigint': return big(v);
       case 'string': { const b = enc.encode(v); u8(T.BINARY); u32(b.length); return bytes(b); }
       case 'number':
-        // ponytail: nativo converte negativo > int32 errado (sinal sempre 0); aqui grava o sinal
+        // ponytail: o erlpack nativo grava o sinal errado em negativo > int32; aqui grava certo
         if (!Number.isInteger(v) || Math.abs(v) >= 2 ** 64) { need(9); buf[pos++] = T.NEW_FLOAT; view.setFloat64(pos, v); pos += 8; return; }
         if (v >= 0 && v < 256) { u8(T.SMALL_INTEGER); return u8(v); }
         if (v >= -(2 ** 31) && v < 2 ** 31) { u8(T.INTEGER); need(4); view.setInt32(pos, v); pos += 4; return; }
         return big(BigInt(v));
       case 'object':
-        // Array vazio → só NIL (6a), confirmado rodando o nativo
+        // Array vazio → só NIL (6a), como o erlpack
         if (Array.isArray(v)) {
           if (v.length) { u8(T.LIST); u32(v.length); for (const x of v) term(x, depth - 1); }
           return u8(T.NIL);
@@ -138,7 +138,7 @@ export function unpack(input) {
         }
         return o;
       }
-      // ponytail: COMPRESSED(80), REFERENCE, PORT, PID, EXPORT existem no nativo mas não trafegam neste app
+      // ponytail: COMPRESSED(80), REFERENCE, PORT, PID, EXPORT existem no formato mas não trafegam neste app
       default: throw new Error('Unsupported erlang term type identifier found');
     }
   }

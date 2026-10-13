@@ -1,4 +1,8 @@
-# Testes em todo push/PR. Numa tag v* (ex.: v1.1.0), gera os .exe do Windows e anexa a um release rascunho.
+# Testes em todo push e pull request.
+# Release: suba a versão no package.json, faça commit e crie a tag igual (ex.: v1.5.0):
+#   npm version minor && git push --follow-tags
+# A tag gera o instalador e o portátil e publica o release no GitHub. Quem instalou recebe a
+# atualização sozinho (o app lê o latest.yml do release).
 name: CI
 
 on:
@@ -19,7 +23,7 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  windows:
+  release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: testes
     runs-on: windows-latest
@@ -31,10 +35,13 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Tag e package.json precisam ter a mesma versão
+        shell: bash
+        run: |
+          versao=$(node -p "require('./package.json').version")
+          [ "v$versao" = "${GITHUB_REF_NAME}" ] || { echo "::error::tag ${GITHUB_REF_NAME} ≠ package.json v$versao"; exit 1; }
       - run: npm ci
-      - run: npx electron-builder --win portable nsis --publish never
-      - name: Release rascunho com os executáveis
-        shell: bash # o PowerShell não expande dist/*.exe para comandos nativos
+      - name: Gerar e publicar
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/*.exe --draft --generate-notes
+        run: npx electron-builder --win nsis portable --publish always

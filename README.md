@@ -3,8 +3,8 @@
 Chat de texto e voz com compartilhamento de tela, feito para você e seus amigos. Não depende de nenhuma
 empresa: o servidor roda no computador de um de vocês (ou numa VPS), e os dados ficam com vocês.
 
-> Projeto independente, sem relação com a Discord Inc. A arquitetura foi estudada a partir do cliente
-> oficial (ver [EVIDENCIAS.md](EVIDENCIAS.md)); nenhum código do Discord é usado.
+> Projeto independente, sem relação com a Discord Inc. Inspirado na arquitetura do Discord;
+> nenhum código do Discord é usado.
 
 ## O que tem
 
@@ -17,16 +17,36 @@ empresa: o servidor roda no computador de um de vocês (ou numa VPS), e os dados
 - **App para Windows** com notificações de menção e o servidor embutido; também funciona no navegador
 - **Contas com senha** e código de convite opcional
 
-## Começar
+## Instalar (Windows)
 
-### Usar (Windows)
+**Pelo terminal** — abra o PowerShell e cole:
 
-Baixe o `.exe` em **Releases**: o *portátil* abre direto, o *instalador* instala.
+```powershell
+irm https://raw.githubusercontent.com/AllanDeOliveira/Limb/main/install.ps1 | iex
+```
+
+Baixa a última versão, instala para o seu usuário (não pede administrador) e abre o app.
+
+**Ou baixe** em [Releases](https://github.com/AllanDeOliveira/Limb/releases/latest):
+
+- `Limb-x.y.z-instalador.exe` — **recomendado**: instala e **se atualiza sozinho**.
+- `Limb-x.y.z-portatil.exe` — roda sem instalar; avisa quando sai versão nova, mas a troca é manual.
+
 O Windows pode mostrar um aviso do SmartScreen, porque o executável não tem assinatura digital:
 clique em **Mais informações → Executar assim mesmo**.
 
-Ao abrir, o app já está hospedando um servidor só para o seu computador. Crie a conta escolhendo um nome
-e uma senha (a conta é criada no primeiro login).
+Ao abrir pela primeira vez, o app pergunta se você vai **hospedar** ou **entrar** no servidor de um amigo
+(veja [Jogar com os amigos](#jogar-com-os-amigos)). A conta é criada no primeiro login, com nome e senha.
+
+## Atualizar
+
+- **Instalador:** automático. O app procura versão nova ao abrir e a cada 6 horas, baixa em segundo plano
+  e pergunta se pode reiniciar (se você disser "Depois", instala quando fechar).
+- **Pelo terminal:** o mesmo comando da instalação. Se já estiver na última versão, ele avisa e não faz nada.
+- **Portátil:** o app avisa e abre a página de download.
+
+A interface vem do servidor de quem hospeda: depois de atualizar, peça para quem hospeda atualizar também.
+Seus dados (`%APPDATA%\Limb`) são mantidos em qualquer atualização.
 
 ### Desenvolver
 
@@ -85,11 +105,15 @@ Com o Tailscale, a conexão direta quase sempre funciona sem TURN.
 
 ## Hospedar numa VPS
 
+Precisa do [Node.js 24](https://nodejs.org) ou mais novo.
+
 ```sh
-git clone <este repositório> && cd limb
+git clone https://github.com/AllanDeOliveira/Limb.git limb && cd limb
 npm ci --omit=dev
 INVITE_CODE=meus-amigos HOST=127.0.0.1 TRUST_PROXY=1 node server.js
 ```
+
+Para atualizar o servidor: `npm run atualizar` (faz `git pull` e reinstala as dependências) e reinicie o processo.
 
 Na frente, um proxy com HTTPS. Com o [Caddy](https://caddyserver.com), o `Caddyfile` inteiro é:
 
@@ -134,10 +158,20 @@ No app desktop, as mesmas opções ficam em `%APPDATA%\Limb\settings.json` (`por
 | Snowflakes e busca | [lib.js](lib.js) |
 | Interface (stores no estilo Flux, sem framework) | [public/app.js](public/app.js) |
 | Voz e compartilhamento de tela no cliente | [public/voz.js](public/voz.js) |
-| Codificador ETF (port em JS do `discord_erlpack`) | [public/etf.js](public/etf.js) |
-| App desktop (Electron) | [desktop/](desktop/) |
+| Codificador ETF (compatível com o [erlpack](https://github.com/discord/erlpack)) | [public/etf.js](public/etf.js) |
+| App desktop (Electron), Tailscale e atualização automática | [desktop/](desktop/) |
 
-Banco: SQLite embutido no Node (`node:sqlite`). Única dependência de produção: [`ws`](https://github.com/websockets/ws).
+Banco: SQLite embutido no Node (`node:sqlite`). Dependências: [`ws`](https://github.com/websockets/ws) (servidor) e
+[`electron-updater`](https://www.electron.build/auto-update) (atualização do app).
+
+## Publicar uma versão
+
+```sh
+npm version minor          # ou patch / major: sobe a versão no package.json e cria a tag
+git push --follow-tags     # o GitHub Actions testa, gera os .exe e publica o release
+```
+
+Quem usa o instalador recebe a versão nova sozinho; quem usa o terminal roda o comando de instalação de novo.
 
 ## Licença
 

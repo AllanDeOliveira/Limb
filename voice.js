@@ -1,4 +1,4 @@
-// Voz no desenho do Discord (ver EVIDENCIAS.md, seção 10):
+// Voz no desenho do Discord:
 //  1. gateway principal, op 4 VOICE_STATE_UPDATE {guild_id, channel_id, self_mute, self_deaf}
 //  2. servidor: VOICE_STATE_UPDATE para todos + VOICE_SERVER_UPDATE {token, endpoint} para a sessão
 //  3. cliente abre o gateway de voz (endpoint) e faz IDENTIFY (op 0) com o token

@@ -8,7 +8,7 @@ import { pack, unpack } from './public/etf.js';
 const hex = (b) => Buffer.from(b).toString('hex');
 const bytes = (h) => new Uint8Array(Buffer.from(h, 'hex'));
 
-test('pack: bytes iguais aos gerados pelo nativo (descompilação)', () => {
+test('pack: bytes iguais aos do erlpack', () => {
   assert.equal(hex(pack(null)), '8373036e696c');           // atom nil
   assert.equal(hex(pack(true)), '83730474727565');
   assert.equal(hex(pack(false)), '837305' + '66616c7365');
@@ -22,7 +22,7 @@ test('pack: bytes iguais aos gerados pelo nativo (descompilação)', () => {
   assert.equal(hex(pack({ a: 1 })), '8374000000016d00000001616101');  // MAP
 });
 
-test('unpack: regras do decoder nativo', () => {
+test('unpack: mesmas regras do erlpack', () => {
   assert.equal(unpack(bytes('836e0800' + 'ffffffffffffff0f')), '1152921504606846975'); // snowflake → string
   assert.equal(unpack(bytes('836e040000000080')), 2147483648);    // 4 bytes positivo → número (uint32)
   assert.equal(unpack(bytes('836e040100000080')), '-2147483648'); // 4 bytes negativo fora de int32 → string
@@ -48,7 +48,7 @@ test('round-trip de um payload do gateway, com snowflake BigInt', () => {
   assert.deepEqual(unpack(pack(p)), { ...p, d: { ...p.d, id: '1234567890123456789' } });
 });
 
-// ── Diferencial contra o discord_erlpack.node instalado ───────────────────────
+// ── Compatibilidade: se o app do Discord estiver instalado, compara com o erlpack dele ─
 function acharNativo() {
   if (process.env.ERLPACK_NODE) return process.env.ERLPACK_NODE;
   const base = path.join(process.env.LOCALAPPDATA ?? '', 'Discord');

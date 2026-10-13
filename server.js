@@ -4,7 +4,7 @@
 // reconexão: RESUME(6) {token, session_id, seq} → eventos perdidos + RESUMED, ou INVALID_SESSION(9).
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +26,8 @@ const MAX_REACOES = 20; // emojis distintos por mensagem (limite do Discord)
 // ── Banco ───────────────────────────────────────────────────────────────────
 // ids são snowflakes (INTEGER 64 bits) → readBigInts, e viram string no JSON, como na API do Discord
 const db = new DatabaseSync(process.env.DB_FILE || 'limb.db', { readBigInts: true });
+// WAL: leituras não esperam escritas; NORMAL é seguro com WAL e evita um fsync por mensagem
+db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 3000;');
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, token TEXT UNIQUE NOT NULL);
   CREATE TABLE IF NOT EXISTS guilds (id INTEGER PRIMARY KEY, name TEXT NOT NULL, owner_id INTEGER);
@@ -450,7 +452,11 @@ async function estatico(url, res) {
   if (!arquivo.startsWith(PUBLIC + path.sep)) return res.writeHead(403).end();
   let corpo;
   try { corpo = await readFile(arquivo); } catch { return res.writeHead(404).end('Não encontrado'); }
-  res.writeHead(200, { 'Content-Type': TIPOS[path.extname(arquivo)] || 'application/octet-stream' }).end(corpo);
+  // no-cache + ETag: o navegador sempre confere, mas só baixa de novo se o arquivo mudou (atualização chega na hora)
+  const etag = `"${createHash('sha1').update(corpo).digest('base64url')}"`;
+  const cab = { ETag: etag, 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' };
+  if (res.req.headers['if-none-match'] === etag) return res.writeHead(304, cab).end();
+  res.writeHead(200, { ...cab, 'Content-Type': TIPOS[path.extname(arquivo)] || 'application/octet-stream' }).end(corpo);
 }
 
 const server = http.createServer(async (req, res) => {

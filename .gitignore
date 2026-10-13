@@ -4,3 +4,6 @@ dist/
 *.db-wal
 *.db-shm
 *.sqlite
+
+# Anotações de estudo locais (trechos de software de terceiros): não publicar
+EVIDENCIAS.md

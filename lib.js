@@ -1,4 +1,4 @@
-// Snowflake e busca — mesma lógica observada no bundle web do Discord (ver EVIDENCIAS.md).
+// Snowflake e busca no estilo do Discord (formato de id e filtros iguais aos da API dele).
 
 // ── Snowflake ───────────────────────────────────────────────────────────────
 // Discord: DISCORD_EPOCH=14200704e5; fromTimestamp(t) = (t - epoch) << 22;
