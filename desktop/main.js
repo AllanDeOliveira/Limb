@@ -4,7 +4,7 @@
 import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, nativeImage, net, Notification, session, shell, Tray, utilityProcess } from 'electron';
 import * as tailscale from './tailscale.js';
 import { iniciarAtualizacao } from './atualizacao.js';
-import { cpSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +27,23 @@ if (!existsSync(arqConfig) && existsSync(path.join(pastaAntiga, 'settings.json')
   } catch (e) { console.error('migração da pasta antiga falhou:', e); }
 }
 const arqJanela = path.join(dados, 'janela.json');
+
+// Registro em %APPDATA%\Limb\limb.log: no computador de um amigo é o único jeito de saber o que deu errado.
+// Passou de 512 KB, recomeça (não cresce para sempre).
+const arqLog = path.join(dados, 'limb.log');
+function registrar(...partes) {
+  try {
+    if (existsSync(arqLog) && statSync(arqLog).size > 512 * 1024) writeFileSync(arqLog, '');
+    appendFileSync(arqLog, `${new Date().toISOString()} v${app.getVersion()} ${partes.map((p) => (p instanceof Error ? p.stack : typeof p === 'string' ? p : JSON.stringify(p))).join(' ')}\n`);
+  } catch {}
+}
+// Janela que trava ou cujo processo morre fica em branco sem avisar: registra para o diagnóstico
+function vigiar(win, nome) {
+  win.webContents.on('render-process-gone', (_e, d) => registrar(`[${nome}] processo da página morreu:`, d));
+  win.webContents.on('did-fail-load', (_e, codigo, desc, url, principal) => { if (principal) registrar(`[${nome}] falhou ao carregar ${url}: ${desc} (${codigo})`); });
+  win.on('unresponsive', () => registrar(`[${nome}] parou de responder`));
+  win.webContents.on('console-message', (e) => { if (e.level === 'error') registrar(`[${nome}] erro na página: ${e.message} (${e.sourceId}:${e.lineNumber})`); });
+}
 
 const PADRAO = {
   endpoint: null, // ex.: "http://100.101.102.103:3000" para entrar no servidor de um amigo
@@ -116,6 +133,7 @@ function criarJanela(endpoint) {
       backgroundThrottling: false,
     },
   });
+  vigiar(janela, 'principal');
   if (salvo.maximizado) janela.maximize();
   // Ligou junto com o Windows: o servidor sobe, a janela fica na bandeja até alguém clicar
   janela.once('ready-to-show', () => { if (!(iniciouOculto && hospedandoAmigos)) janela.show(); });
@@ -255,16 +273,22 @@ function criarBandeja() {
 function abrirConexao(erro = null) {
   erroConexao = erro;
   if (janelaConexao) { janelaConexao.focus(); janelaConexao.reload(); return; }
-  janelaConexao = new BrowserWindow({
-    width: 600, height: 760, minWidth: 480, minHeight: 500, minimizable: false, title: `${NOME} — Servidor`,
+  // Só aparece com a página pronta: antes, num computador, ela ficava em branco (nunca carregou) e a pessoa
+  // não tinha o que fazer. Se não ficar pronta em 4 s, recarrega uma vez; em 8 s, mostra de qualquer jeito.
+  const win = janelaConexao = new BrowserWindow({
+    width: 600, height: 760, minWidth: 480, minHeight: 500, minimizable: false, title: `${NOME} — Servidor`, show: false,
     parent: janela ?? undefined, modal: !!janela, autoHideMenuBar: true, backgroundColor: '#1e2023',
     webPreferences: { preload: path.join(raiz, 'desktop', 'conexao-preload.cjs'), contextIsolation: true, sandbox: true },
   });
-  janelaConexao.on('closed', () => {
-    janelaConexao = null;
+  vigiar(win, 'servidor');
+  win.once('ready-to-show', () => win.show());
+  setTimeout(() => { if (!win.isDestroyed() && !win.isVisible()) { registrar('[servidor] não ficou pronta em 4 s; recarregando'); win.reload(); } }, 4000);
+  setTimeout(() => { if (!win.isDestroyed() && !win.isVisible()) { registrar('[servidor] ainda não pronta em 8 s; mostrando assim mesmo'); win.show(); } }, 8000);
+  win.on('closed', () => {
+    if (janelaConexao === win) janelaConexao = null;
     if (!janela) app.quit(); // aberta sozinha (o app não conseguiu iniciar) e fechada sem salvar
   });
-  janelaConexao.loadFile(path.join(raiz, 'desktop', 'conexao.html'));
+  win.loadFile(path.join(raiz, 'desktop', 'conexao.html'));
 }
 const daConexao = (e) => janelaConexao && e.sender === janelaConexao.webContents;
 ipcMain.handle('conexao:ler', (e) => {
@@ -370,4 +394,12 @@ app.whenReady().then(async () => {
   }
   iniciarAtualizacao(() => janela ?? janelaConexao);
 });
-process.on('uncaughtException', (e) => { dialog.showErrorBox(NOME, e.stack ?? String(e)); });
+// showErrorBox bloqueia o processo inteiro até alguém fechar a caixa; se ela ficar atrás das janelas, o app
+// parece congelado (janelas em branco). Depois de pronto, usa a caixa que não bloqueia.
+process.on('uncaughtException', (e) => {
+  registrar('erro não tratado:', e);
+  if (app.isReady()) dialog.showMessageBox({ type: 'error', title: NOME, message: 'Algo deu errado no Limb.', detail: `${e.stack ?? e}\n\nDetalhes em ${arqLog}` }).catch(() => {});
+  else dialog.showErrorBox(NOME, e.stack ?? String(e));
+});
+process.on('unhandledRejection', (e) => registrar('promessa rejeitada sem tratamento:', e));
+registrar(`iniciando (${process.platform} ${process.arch}, Electron ${process.versions.electron})`);
