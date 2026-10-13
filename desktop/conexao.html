@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'">
+<title>Servidor</title>
+<style>
+  :root { --bg0: #1e1f22; --bg1: #2b2d31; --bg2: #313338; --bg3: #383a40; --txt: #dbdee1; --mut: #949ba4; --acc: #5865f2; --ok: #23a55a; --warn: #f0b132; --err: #f23f43; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; padding: 20px 22px; font: 14px/1.45 system-ui, sans-serif; background: var(--bg2); color: var(--txt); }
+  h1 { font-size: 19px; margin: 0 0 4px; }
+  h2 { font-size: 14px; margin: 0 0 8px; color: var(--mut); text-transform: uppercase; letter-spacing: .02em; }
+  p { margin: 0 0 8px; }
+  small, .mut { color: var(--mut); }
+  .caixa { background: var(--bg1); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+  .erro { background: rgba(242, 63, 67, .15); border-left: 3px solid var(--err); padding: 8px 10px; border-radius: 4px; margin-bottom: 12px; }
+  /* status do Tailscale */
+  .ts { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .ts .bola { width: 12px; height: 12px; border-radius: 50%; background: var(--mut); flex: none; }
+  .ts.ok .bola { background: var(--ok); } .ts.aviso .bola { background: var(--warn); } .ts.ruim .bola { background: var(--err); }
+  .ts .txt { flex: 1; }
+  /* escolha do modo */
+  .modos { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+  .modo { background: var(--bg1); border: 2px solid transparent; border-radius: 8px; padding: 12px; text-align: left; display: grid; gap: 4px; }
+  .modo b { font-size: 15px; } .modo span { color: var(--mut); font-size: 13px; }
+  .modo[aria-pressed="true"] { border-color: var(--acc); }
+  ol { margin: 0; padding-left: 20px; display: grid; gap: 12px; }
+  label.campo { display: grid; gap: 4px; }
+  input[type=text], input[type=number], textarea { background: var(--bg0); color: var(--txt); border: 0; border-radius: 4px; padding: 8px; font: inherit; width: 100%; }
+  textarea { resize: vertical; min-height: 88px; }
+  .convite { white-space: pre-wrap; background: var(--bg0); border-radius: 4px; padding: 10px; font-size: 13px; user-select: all; margin: 6px 0; }
+  .linha { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button { font: inherit; color: inherit; border: 0; border-radius: 4px; padding: 8px 14px; background: var(--bg3); cursor: pointer; }
+  button:hover:not(:disabled) { filter: brightness(1.15); }
+  button.ok { background: var(--acc); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .acoes { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  #resultado.bom { color: var(--ok); } #resultado.ruim { color: var(--err); }
+  details summary { cursor: pointer; color: var(--mut); }
+  details[open] summary { margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<h1 id="titulo">Servidor</h1>
+<p class="mut" id="subtitulo">Hospede uma conversa no seu computador ou entre na de um amigo.</p>
+<div class="erro" id="erro" hidden></div>
+
+<section class="caixa">
+  <h2>1. Tailscale</h2>
+  <div class="ts" id="ts"><span class="bola"></span><span class="txt" id="tsTexto">Verificando…</span><button type="button" id="tsBotao" hidden></button></div>
+  <small>O Tailscale liga você e seus amigos com segurança, sem mexer no roteador. Grátis.</small>
+</section>
+
+<h2>2. O que você quer fazer?</h2>
+<div class="modos">
+  <button type="button" class="modo" data-modo="hospedar" aria-pressed="false"><b>🏠 Hospedar</b><span>Meus amigos entram no meu computador</span></button>
+  <button type="button" class="modo" data-modo="entrar" aria-pressed="false"><b>🚪 Entrar</b><span>Um amigo me mandou um convite</span></button>
+</div>
+
+<section class="caixa" id="hospedar" hidden>
+  <ol>
+    <li>
+      <b>Dê acesso ao seu computador.</b> Na página do Tailscale, ache <b id="meuNome">este computador</b>, clique em
+      <b>⋯ → Share…</b> e mande o link para o seu amigo. <small>Ele só ganha acesso a este computador.</small>
+      <div class="linha" style="margin-top: 6px"><button type="button" id="abrirShare">Abrir página do Tailscale</button></div>
+    </li>
+    <li>
+      <b>Mande o convite.</b>
+      <div class="convite" id="convite"></div>
+      <div class="linha"><button type="button" id="copiar">Copiar convite</button><span id="copiado" class="mut" role="status"></span></div>
+    </li>
+    <li><b>Clique em “Salvar e reiniciar”.</b> <small>Se o Windows perguntar sobre o firewall, clique em Permitir.</small></li>
+  </ol>
+  <details style="margin-top: 12px">
+    <summary>Opções</summary>
+    <div style="display: grid; gap: 10px">
+      <label class="campo">Código de convite <small>(quem não tiver não cria conta; vazio = não pede)</small>
+        <input type="text" id="codigo" maxlength="100" autocomplete="off"></label>
+      <label class="campo">Porta <input type="number" id="porta" min="1024" max="65535"></label>
+      <label><input type="checkbox" id="compartilhar"> Deixar outros computadores entrarem</label>
+      <small id="enderecos"></small>
+    </div>
+  </details>
+  <p class="mut" id="portatil" style="margin: 10px 0 0" hidden>Dica: para hospedar, prefira o <b>instalador</b>. Na versão portátil o
+    Windows pode perguntar sobre o firewall toda vez que o app abre.</p>
+</section>
+
+<section class="caixa" id="entrar" hidden>
+  <ol>
+    <li><b>Aceite o link do Tailscale</b> que seu amigo mandou (abre no navegador, clique em aceitar).</li>
+    <li>
+      <label class="campo"><b>Cole aqui o convite dele</b>
+        <textarea id="colar" placeholder="Pode colar a mensagem inteira: o app acha o endereço e o código sozinho."></textarea></label>
+      <div class="linha" style="margin-top: 6px">
+        <span class="mut">Endereço:</span> <b id="lidoEndereco">—</b><span class="mut">· Código:</span> <b id="lidoCodigo">—</b>
+        <button type="button" id="testar" disabled>Testar de novo</button>
+      </div>
+      <p id="resultado" role="status" style="margin: 8px 0 0"></p>
+    </li>
+  </ol>
+</section>
+
+<div class="acoes"><button type="button" id="cancelar">Cancelar</button><button type="button" class="ok" id="salvar" disabled>Salvar e reiniciar</button></div>
+<script src="conexao.js"></script>
+</body>
+</html>

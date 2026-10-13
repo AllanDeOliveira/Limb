@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Limb</title>
+<link rel="icon" href="data:,">
+<!-- só scripts/conexões da própria origem; estilos inline são usados pelas cores dos avatares -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
+
+<style>
+  :root {
+    --bg0: #1e1f22; --bg1: #2b2d31; --bg2: #313338; --bg3: #383a40;
+    --txt: #dbdee1; --mut: #949ba4; --acc: #5865f2; --ok: #23a55a; --err: #f23f43;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; } /* senão o display:grid de #login/#app vence o atributo */
+  body { margin: 0; font: 15px/1.4 system-ui, sans-serif; background: var(--bg2); color: var(--txt); height: 100vh; overflow: hidden; }
+  button, input, textarea { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  #app { display: grid; grid-template-columns: 72px 240px 1fr 240px; height: 100vh; }
+  #guilds { background: var(--bg0); padding: 12px 0; display: flex; flex-direction: column; align-items: center; gap: 8px; overflow-y: auto; }
+  .guild { width: 48px; height: 48px; border-radius: 50%; border: 0; background: var(--bg2); font-weight: 600; transition: border-radius .15s; }
+  .guild:hover, .guild.on { border-radius: 16px; background: var(--acc); }
+  #side { background: var(--bg1); display: flex; flex-direction: column; min-width: 0; }
+  #side h2 { margin: 0; padding: 14px 16px; font-size: 16px; border-bottom: 1px solid var(--bg0); }
+  #channels { flex: 1; overflow-y: auto; padding: 8px; }
+  .chan { display: block; width: 100%; text-align: left; border: 0; background: none; color: var(--mut); padding: 6px 8px; border-radius: 4px; }
+  .chan:hover { background: var(--bg3); color: var(--txt); }
+  .chan.on { background: var(--bg3); color: #fff; }
+  .chan::before { content: "# "; opacity: .6; }
+  .add { color: var(--mut); background: none; border: 1px dashed var(--bg3); border-radius: 4px; width: 100%; padding: 4px; margin-top: 8px; }
+  #me { background: #232428; padding: 10px 12px; font-size: 13px; }
+  main { display: flex; flex-direction: column; min-width: 0; }
+  header { display: flex; align-items: center; gap: 12px; padding: 0 16px; height: 49px; border-bottom: 1px solid var(--bg0); }
+  header h3 { margin: 0; flex: 1; font-size: 16px; }
+  #conn { font-size: 12px; color: var(--mut); }
+  #search { background: var(--bg0); border: 0; border-radius: 4px; padding: 6px 8px; width: 260px; }
+  #messages { flex: 1; overflow-y: auto; padding: 16px 0; }
+  .msg { padding: 2px 16px 2px 72px; position: relative; }
+  .msg:hover { background: #2e3035; }
+  .msg .who { font-weight: 600; color: #fff; }
+  .msg .when { color: var(--mut); font-size: 12px; margin-left: 6px; }
+  .msg .body { white-space: pre-wrap; word-wrap: break-word; }
+  .msg .av { position: absolute; left: 16px; top: 4px; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; }
+  .msg.pending .body { opacity: .5; }
+  .msg.failed .body { color: var(--err); }
+  .msg .tools { position: absolute; right: 16px; top: -12px; display: none; gap: 2px; z-index: 1; }
+  .msg:hover .tools { display: flex; }
+  .tools button { background: var(--bg1); border: 1px solid var(--bg0); border-radius: 4px; font-size: 12px; padding: 2px 6px; }
+  .edited { color: var(--mut); font-size: 11px; }
+  .more { display: block; margin: 0 auto 12px; background: none; border: 0; color: var(--acc); }
+  #composer { padding: 0 16px; }
+  #input { display: block; width: 100%; background: var(--bg3); border: 0; border-radius: 8px; padding: 11px 14px; resize: none; max-height: 200px; }
+  #reply { background: var(--bg1); border-radius: 8px 8px 0 0; padding: 6px 14px; font-size: 13px; color: var(--mut); display: flex; gap: 4px; align-items: center; }
+  #reply button { margin-left: auto; background: none; border: 0; color: var(--mut); }
+  #reply:not([hidden]) + #input { border-radius: 0 0 8px 8px; }
+  /* não lidas e menções */
+  .chan { display: flex; align-items: center; gap: 6px; }
+  .chan span { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .chan.unread { color: #fff; font-weight: 600; }
+  .badge { background: var(--err); color: #fff; border-radius: 8px; font-size: 11px; font-weight: 700; padding: 0 5px; line-height: 16px; }
+  .gwrap { position: relative; }
+  .gwrap .badge { position: absolute; right: -4px; bottom: -2px; border: 3px solid var(--bg0); border-radius: 10px; }
+  .pill { position: absolute; left: -12px; top: 20px; width: 4px; height: 8px; background: #fff; border-radius: 0 4px 4px 0; }
+  /* voz */
+  .chan.voice::before { content: "🔊 "; opacity: .8; }
+  .vuser { display: flex; align-items: center; gap: 6px; padding: 2px 8px 2px 28px; font-size: 13px; color: var(--mut); }
+  .vuser .av { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; color: #fff; }
+  .vuser.speaking .av { box-shadow: 0 0 0 2px var(--ok); }
+  .vuser.speaking .vname { color: var(--txt); }
+  .vuser[title]:not([title=""]) { cursor: pointer; }
+  #voice .vstatus .aviso { color: var(--err); font-weight: 600; }
+  .adds { display: flex; gap: 4px; }
+  #voice { display: flex; align-items: center; gap: 4px; padding: 8px; background: #232428; border-bottom: 1px solid var(--bg1); }
+  #voice[hidden] { display: none; }
+  #voice .vstatus { flex: 1; display: grid; font-size: 13px; min-width: 0; }
+  #voice .vstatus .ok { color: var(--ok); }
+  #voice .vstatus small { color: var(--mut); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #voice button { background: none; border: 0; border-radius: 4px; padding: 4px 6px; font-size: 16px; }
+  #voice button:hover { background: var(--bg3); }
+  #voice button.off { background: rgba(242, 63, 67, .25); }
+  #voice button.on { background: rgba(35, 165, 90, .3); }
+  #voice .vstatus small.ok { color: var(--ok); }
+  #voice button.hangup:hover { background: var(--err); }
+  /* mensagens: continuação, resposta, menção, reações, markdown */
+  .msg:not(.cont) { margin-top: 14px; }
+  .msg.mentioned { background: rgba(240, 177, 50, .08); box-shadow: inset 2px 0 #f0b132; }
+  .msg .ref { font-size: 13px; color: var(--mut); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .msg .ref::before { content: "↪ "; }
+  .msg .ref + .av { top: 24px; }
+  .reactions { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 2px; }
+  .react { background: var(--bg1); border: 1px solid transparent; border-radius: 8px; padding: 1px 6px; font-size: 13px; }
+  .react.me { background: rgba(88, 101, 242, .3); border-color: var(--acc); }
+  .mention { background: rgba(88, 101, 242, .3); color: #c9cdfb; border-radius: 3px; padding: 0 2px; }
+  .mention.me { background: rgba(240, 177, 50, .3); color: #f5d38d; }
+  .body code { background: var(--bg0); border-radius: 4px; padding: 0 4px; font-size: 13px; }
+  .body pre { background: var(--bg0); border: 1px solid #1a1b1e; border-radius: 4px; padding: 8px; margin: 4px 0; overflow-x: auto; }
+  .body pre code { padding: 0; }
+  .body a { color: #00a8fc; }
+  .spoiler { background: #1a1b1e; color: transparent; border-radius: 3px; cursor: pointer; }
+  .spoiler.show { background: var(--bg3); color: inherit; }
+  #typing { height: 22px; padding: 2px 16px; font-size: 12px; color: var(--mut); }
+  aside { background: var(--bg1); overflow-y: auto; padding: 12px 8px; }
+  aside h4 { margin: 8px 8px; font-size: 12px; color: var(--mut); text-transform: uppercase; }
+  .member { display: flex; align-items: center; gap: 8px; padding: 4px 8px; }
+  .member.off { opacity: .4; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--mut); }
+  .member:not(.off) .dot { background: var(--ok); }
+  .results .hit { cursor: pointer; border-radius: 6px; background: var(--bg2); margin: 6px 0; padding: 8px; }
+  .results .hit:hover { background: var(--bg3); }
+  .results small { color: var(--mut); }
+  #login { position: fixed; inset: 0; display: grid; place-items: center; background: var(--acc); }
+  #login form { background: var(--bg2); padding: 32px; border-radius: 8px; width: min(400px, calc(100vw - 32px)); display: grid; gap: 12px; }
+  #login input { background: var(--bg0); border: 0; border-radius: 4px; padding: 10px; }
+  #login button { background: var(--acc); border: 0; border-radius: 4px; padding: 10px; color: #fff; font-weight: 600; }
+  .error { color: var(--err); font-size: 13px; min-height: 1em; }
+  #login label { display: grid; gap: 6px; }
+  #login .dica, .dica { color: var(--mut); font-size: 13px; margin: 0; }
+  #login button.link { background: none; color: var(--mut); font-weight: 400; text-decoration: underline; padding: 0; }
+  /* palco: assistir a tela de alguém (substitui o chat, como no Discord) */
+  main.assistindo #messages, main.assistindo #composer, main.assistindo #typing { display: none; }
+  #palco { flex: 1; display: flex; flex-direction: column; min-height: 0; background: #000; }
+  #palco .barra { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--bg0); }
+  #palco .barra #palcoInfo { flex: 1; color: var(--mut); font-size: 13px; }
+  #palco .barra button { background: none; border: 0; border-radius: 4px; padding: 4px 8px; font-size: 16px; }
+  #palco .barra button:hover { background: var(--bg3); }
+  #palco .vol { display: flex; align-items: center; gap: 4px; }
+  #palco video { flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #000; }
+  #palco p { margin: auto; color: var(--mut); }
+  .ao-vivo { background: var(--err); color: #fff; font-size: 11px; font-weight: 700; border-radius: 4px; padding: 1px 5px; }
+  button.ao-vivo { border: 0; cursor: pointer; }
+  /* seletor de tela */
+  #telaDlg { background: var(--bg2); color: var(--txt); border: 0; border-radius: 8px; padding: 20px; width: min(760px, calc(100vw - 32px)); }
+  #telaDlg::backdrop { background: rgba(0, 0, 0, .6); }
+  #telaDlg h3 { margin: 0 0 12px; }
+  #telaFontes { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; max-height: 50vh; overflow-y: auto; }
+  #telaFontes:empty { display: none; }
+  .fonte { background: var(--bg1); border: 2px solid transparent; border-radius: 6px; padding: 6px; display: grid; gap: 4px; text-align: left; }
+  .fonte:hover, .fonte:focus-visible { border-color: var(--acc); }
+  .fonte img { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; border-radius: 4px; }
+  .fonte span { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #telaDlg .opcoes { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 14px; align-items: center; }
+  #telaDlg select { background: var(--bg0); color: var(--txt); border: 0; border-radius: 4px; padding: 6px; margin-left: 6px; }
+  #telaDlg menu { display: flex; justify-content: flex-end; gap: 8px; margin: 16px 0 0; padding: 0; }
+  #telaDlg menu button { border: 0; border-radius: 4px; padding: 8px 16px; background: var(--bg3); }
+  #telaDlg menu .ok { background: var(--acc); color: #fff; font-weight: 600; }
+  #telaDlg[data-desktop] #telaOk { display: none; } /* no app desktop, clicar na fonte já compartilha */
+  #pedir { background: var(--bg2); color: var(--txt); border: 0; border-radius: 8px; padding: 20px; width: min(440px, calc(100vw - 32px)); }
+  #pedir::backdrop { background: rgba(0, 0, 0, .6); }
+  #pedir label { display: grid; gap: 8px; font-weight: 600; }
+  #pedir textarea { background: var(--bg0); border: 0; border-radius: 4px; padding: 10px; resize: vertical; font-weight: 400; }
+  #pedir menu { display: flex; justify-content: flex-end; gap: 8px; margin: 16px 0 0; padding: 0; }
+  #pedir menu button { border: 0; border-radius: 4px; padding: 8px 16px; background: var(--bg3); }
+  #pedir menu .ok { background: var(--acc); color: #fff; font-weight: 600; }
+  /* Estreito: canais viram uma faixa horizontal; membros somem; busca abre por cima */
+  @media (max-width: 900px) {
+    body, #app { height: 100dvh; }
+    #app { grid-template-columns: 64px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    #guilds { grid-row: 1 / 3; }
+    #side h2 { display: none; }
+    #channels { display: flex; gap: 4px; overflow-x: auto; padding: 6px; }
+    .chan, .add { width: auto; margin: 0; white-space: nowrap; }
+    #me { padding: 4px 8px; }
+    header { flex-wrap: wrap; height: auto; padding: 8px; gap: 6px; }
+    #search { width: 100%; }
+    .msg { padding-left: 56px; padding-right: 8px; }
+    .msg .av { left: 8px; }
+    aside { display: none; }
+    aside.searching { display: block; position: fixed; inset: 0 0 0 64px; z-index: 5; }
+  }
+</style>
+</head>
+<body>
+<div id="login" hidden>
+  <form>
+    <h2 style="margin:0">Bem-vindo!</h2>
+    <p class="dica">Primeira vez aqui? Escolha um nome e uma senha: a conta é criada na hora.</p>
+    <label>Nome de usuário <input name="username" autocomplete="username" required minlength="2" maxlength="32" pattern="[a-zA-Z0-9_.]+"></label>
+    <label>Senha <input name="password" type="password" autocomplete="current-password" required minlength="6" maxlength="128"></label>
+    <label id="conviteCampo" hidden>Código de convite <small>(só para criar conta)</small><input name="invite" autocomplete="off" maxlength="100"></label>
+    <button>Entrar</button>
+    <div class="error" role="alert"></div>
+    <button type="button" class="link" id="trocarServidor" hidden>Conectar a outro servidor…</button>
+  </form>
+</div>
+<div id="app" hidden>
+  <nav id="guilds" aria-label="Servidores"></nav>
+  <div id="side"><h2 id="guildName"></h2><div id="channels"></div><div id="voice" hidden></div><div id="me"></div></div>
+  <main>
+    <header>
+      <h3 id="chanName"></h3>
+      <span id="conn"></span>
+      <input id="search" type="search" placeholder="Buscar (from: in: has:link before: during: after:)" aria-label="Buscar mensagens">
+    </header>
+    <section id="palco" hidden aria-label="Transmissão de tela">
+      <div class="barra">
+        <span class="ao-vivo">AO VIVO</span><b id="palcoNome"></b><span id="palcoInfo"></span>
+        <label class="vol" title="Volume da transmissão">🔊 <input id="palcoVol" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume da transmissão"></label>
+        <button id="palcoCheia" title="Tela cheia">⛶</button>
+        <button id="palcoFechar" title="Parar de assistir">✕</button>
+      </div>
+      <video id="palcoVideo" autoplay playsinline></video>
+      <p id="palcoEspera" hidden>Conectando à transmissão…</p>
+    </section>
+    <div id="messages" role="log" aria-live="polite"></div>
+    <div id="composer">
+      <div id="reply" hidden></div>
+      <textarea id="input" rows="1" maxlength="2000" aria-label="Mensagem (Enter envia, Shift+Enter quebra linha)"></textarea>
+    </div>
+    <div id="typing"></div>
+  </main>
+  <aside id="right"></aside>
+</div>
+<dialog id="pedir">
+  <form method="dialog">
+    <label><span></span><textarea rows="2" required></textarea></label>
+    <menu><button value="cancel" formnovalidate>Cancelar</button><button value="ok" class="ok">OK</button></menu>
+  </form>
+</dialog>
+<dialog id="telaDlg" aria-labelledby="telaTitulo">
+  <form method="dialog">
+    <h3 id="telaTitulo">Compartilhar tela</h3>
+    <div id="telaFontes"></div>
+    <div class="opcoes">
+      <label>Qualidade <select name="qualidade"></select></label>
+      <label id="telaAudioCampo"><input type="checkbox" name="audio"> Incluir o som do computador</label>
+    </div>
+    <p class="dica" id="telaDica"></p>
+    <menu><button value="cancel" formnovalidate>Cancelar</button><button value="ok" class="ok" id="telaOk">Escolher no navegador…</button></menu>
+  </form>
+</dialog>
+<script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+{
+  "name": "limb",
+  "productName": "Limb",
+  "version": "1.3.0",
+  "private": true,
+  "description": "Chat de texto e voz com compartilhamento de tela para você e seus amigos, que roda no seu computador.",
+  "author": "Limb contributors",
+  "type": "module",
+  "main": "desktop/main.js",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "desktop": "electron .",
+    "dist": "electron-builder --win portable nsis",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "electron": "^44.7.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "app.limb.desktop",
+    "productName": "Limb",
+    "files": [
+      "server.js",
+      "voice.js",
+      "lib.js",
+      "public/**",
+      "desktop/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "artifactName": "Limb-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Limb-${version}-portatil.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Limb-${version}-instalador.${ext}"
+    }
+  },
+  "license": "MIT"
+}
