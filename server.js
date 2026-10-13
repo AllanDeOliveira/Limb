@@ -54,15 +54,15 @@ const q = (sql) => db.prepare(sql);
 if (!q("SELECT name FROM pragma_table_info('channels')").all().some((c) => c.name === 'type')) {
   db.exec('ALTER TABLE channels ADD COLUMN type INTEGER NOT NULL DEFAULT 0');
   // servidores que já existiam ganham um canal de voz, como os novos
-  for (const g of q('SELECT id FROM guilds').all()) criarCanal(g.id, 'Geral', CANAL.VOZ);
+  for (const g of q('SELECT id FROM guilds').all()) criarCanal(g.id, 'Sala de voz', CANAL.VOZ);
 }
-if (!q('SELECT 1 FROM guilds').get()) criarGuild('Servidor REA', null);
+if (!q('SELECT 1 FROM guilds').get()) criarGuild('Limb', null);
 
 function criarGuild(name, ownerId) {
   const id = snowflake();
   q('INSERT INTO guilds VALUES (?, ?, ?)').run(id, name, ownerId);
   criarCanal(id, 'geral', CANAL.TEXTO);
-  criarCanal(id, 'Geral', CANAL.VOZ);
+  criarCanal(id, 'Sala de voz', CANAL.VOZ); // "Geral" de voz confundia com o #geral de texto
   return guildPayload(id);
 }
 function criarCanal(guildId, name, type) {

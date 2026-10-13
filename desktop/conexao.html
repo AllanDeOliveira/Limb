@@ -5,7 +5,8 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'">
 <title>Servidor</title>
 <style>
-  :root { --bg0: #1e1f22; --bg1: #2b2d31; --bg2: #313338; --bg3: #383a40; --txt: #dbdee1; --mut: #949ba4; --acc: #5865f2; --ok: #23a55a; --warn: #f0b132; --err: #f23f43; }
+  /* mesma paleta do app (public/index.html): cinzas neutros e o limão, com texto escuro sobre ele */
+  :root { --bg0: #111214; --bg1: #17191b; --bg2: #1e2023; --bg3: #2a2d31; --bg4: #34383d; --linha: #2c2f33; --txt: #e8e9ea; --mut: #a4a9b0; --acc: #f2e558; --acc-tinta: #1d1b05; --ok: #3ecf7a; --warn: #f0b132; --err: #ff6166; color-scheme: dark; }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
   body { margin: 0; padding: 20px 22px; font: 14px/1.45 system-ui, sans-serif; background: var(--bg2); color: var(--txt); }
@@ -13,7 +14,7 @@
   h2 { font-size: 14px; margin: 0 0 8px; color: var(--mut); text-transform: uppercase; letter-spacing: .02em; }
   p { margin: 0 0 8px; }
   small, .mut { color: var(--mut); }
-  .caixa { background: var(--bg1); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+  .caixa { background: var(--bg1); border: 1px solid var(--linha); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
   .erro { background: rgba(242, 63, 67, .15); border-left: 3px solid var(--err); padding: 8px 10px; border-radius: 4px; margin-bottom: 12px; }
   /* status do Tailscale */
   .ts { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
@@ -22,18 +23,22 @@
   .ts .txt { flex: 1; }
   /* escolha do modo */
   .modos { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
-  .modo { background: var(--bg1); border: 2px solid transparent; border-radius: 8px; padding: 12px; text-align: left; display: grid; gap: 4px; }
+  .modo { background: var(--bg1); border: 2px solid var(--linha); border-radius: 12px; padding: 12px; text-align: left; display: grid; gap: 4px; }
+  .modo b { display: flex; align-items: center; gap: 8px; }
+  .modo svg { fill: none; stroke: var(--acc); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .modo b { font-size: 15px; } .modo span { color: var(--mut); font-size: 13px; }
   .modo[aria-pressed="true"] { border-color: var(--acc); }
   ol { margin: 0; padding-left: 20px; display: grid; gap: 12px; }
   label.campo { display: grid; gap: 4px; }
-  input[type=text], input[type=number], textarea { background: var(--bg0); color: var(--txt); border: 0; border-radius: 4px; padding: 8px; font: inherit; width: 100%; }
+  input[type=text], input[type=number], textarea { background: var(--bg0); color: var(--txt); border: 1px solid var(--linha); border-radius: 8px; padding: 8px 10px; font: inherit; width: 100%; }
+  input:focus, textarea:focus { border-color: var(--acc); outline: none; }
+  :focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
   textarea { resize: vertical; min-height: 88px; }
   .convite { white-space: pre-wrap; background: var(--bg0); border-radius: 4px; padding: 10px; font-size: 13px; user-select: all; margin: 6px 0; }
   .linha { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  button { font: inherit; color: inherit; border: 0; border-radius: 4px; padding: 8px 14px; background: var(--bg3); cursor: pointer; }
+  button { font: inherit; color: inherit; border: 0; border-radius: 8px; padding: 8px 14px; background: var(--bg3); cursor: pointer; }
   button:hover:not(:disabled) { filter: brightness(1.15); }
-  button.ok { background: var(--acc); color: #fff; font-weight: 600; }
+  button.ok { background: var(--acc); color: var(--acc-tinta); font-weight: 700; }
   button:disabled { opacity: .5; cursor: default; }
   .acoes { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
   #resultado.bom { color: var(--ok); } #resultado.ruim { color: var(--err); }
@@ -54,8 +59,8 @@
 
 <h2>2. O que você quer fazer?</h2>
 <div class="modos">
-  <button type="button" class="modo" data-modo="hospedar" aria-pressed="false"><b>🏠 Hospedar</b><span>Meus amigos entram no meu computador</span></button>
-  <button type="button" class="modo" data-modo="entrar" aria-pressed="false"><b>🚪 Entrar</b><span>Um amigo me mandou um convite</span></button>
+  <button type="button" class="modo" data-modo="hospedar" aria-pressed="false"><b><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10l9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Hospedar</b><span>Meus amigos entram no meu computador</span></button>
+  <button type="button" class="modo" data-modo="entrar" aria-pressed="false"><b><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3"/></svg>Entrar</b><span>Um amigo me mandou um convite</span></button>
 </div>
 
 <section class="caixa" id="hospedar" hidden>

@@ -80,7 +80,7 @@ function criarJanela(endpoint) {
     ...salvo,
     minWidth: 940, minHeight: 500, // MIN_WIDTH/MIN_HEIGHT do Discord
     title: NOME,
-    backgroundColor: '#313338', // sem flash branco antes da página carregar
+    backgroundColor: '#1e2023', // sem flash branco antes da página carregar
     autoHideMenuBar: true,
     show: false,
     webPreferences: {
@@ -166,7 +166,7 @@ function abrirConexao(erro = null) {
   if (janelaConexao) { janelaConexao.focus(); janelaConexao.reload(); return; }
   janelaConexao = new BrowserWindow({
     width: 600, height: 760, minWidth: 480, minHeight: 500, minimizable: false, title: `${NOME} — Servidor`,
-    parent: janela ?? undefined, modal: !!janela, autoHideMenuBar: true, backgroundColor: '#313338',
+    parent: janela ?? undefined, modal: !!janela, autoHideMenuBar: true, backgroundColor: '#1e2023',
     webPreferences: { preload: path.join(raiz, 'desktop', 'conexao-preload.cjs'), contextIsolation: true, sandbox: true },
   });
   janelaConexao.on('closed', () => {

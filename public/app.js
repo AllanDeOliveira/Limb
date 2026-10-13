@@ -295,8 +295,10 @@ function selecionarGuild(id) {
   selecionarCanal(store.guilds.get(id)?.channels.find((c) => c.type !== 2)?.id);
 }
 function selecionarCanal(id) {
+  if (id && id !== store.channelId) document.body.classList.remove('nav');
   store.channelId = id;
   store.replyTo = null;
+  msgSel = null;
   grudarNoFim = true;
   if (id && !store.messages.has(id)) carregarMensagens(id).catch(alert);
   ackar();
@@ -340,12 +342,58 @@ function h(tag, props = {}, ...filhos) {
   return el;
 }
 const trocar = (el, ...filhos) => el.replaceChildren(...nos(filhos));
-const cor = (id) => `hsl(${Number(BigInt(id) % 360n)} 55% 45%)`;
+// Claridade 34%: letra branca fica legível em qualquer matiz (com 45%, amarelos e verdes davam ~2,5:1)
+const cor = (id) => `hsl(${Number(BigInt(id) % 360n)} 50% 34%)`;
 const nome = (id) => store.users.get(id)?.username ?? '?';
-const hora = (id) => tsOf(id).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+const avatar = (id, letra) => h('span', { className: 'av', style: `background:${cor(id)}`, textContent: (letra ?? nome(id))[0].toUpperCase(), ariaHidden: 'true' });
+
+// Ícones em traço (SVG): emoji mudam de cara em cada sistema e viram o nome do botão no leitor de tela
+const ICONES = {
+  hash: 'M4 9h16M4 15h16M10 3 8 21M16 3l-2 18',
+  voz: 'M11 5 6 9H2v6h4l5 4V5zM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14',
+  semSom: 'M11 5 6 9H2v6h4l5 4V5zM22 9l-6 6M16 9l6 6',
+  mic: 'M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v3',
+  micOff: 'M2 2l20 20M18.9 13.2A7 7 0 0 0 19 12v-2M5 10v2a7 7 0 0 0 12 5M15 9.3V5a3 3 0 0 0-5.7-1.3M9 9v3a3 3 0 0 0 5.1 2.1M12 19v3',
+  fone: 'M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3',
+  foneOff: 'M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 15.4-6.4M21 12v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3M2 2l20 20',
+  tela: 'M4 3h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM8 21h8M12 17v4',
+  janela: 'M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM2 9h20',
+  desligar: 'M10.7 13.3a16 16 0 0 0 3.4 2.6l1.3-1.3a2 2 0 0 1 2.1-.4 12.8 12.8 0 0 0 2.8.7 2 2 0 0 1 1.7 2v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.4 19.4 0 0 1-3.3-2.7m-2.7-3.3a19.8 19.8 0 0 1-3.1-8.6A2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7 12.8 12.8 0 0 0 .7 2.8 2 2 0 0 1-.4 2.1L8.1 9.9M22 2 2 22',
+  mais: 'M12 5v14M5 12h14',
+  sair: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9',
+  servidor: 'M4 2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zM4 14h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2zM6 6h.01M6 18h.01',
+  x: 'M18 6 6 18M6 6l12 12',
+  responder: 'M9 17l-5-5 5-5M20 18v-2a4 4 0 0 0-4-4H4',
+  editar: 'M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z',
+  apagar: 'M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2',
+  marca: 'M8 3v18M8 15c0-4 3-6.5 8.5-7.5M16.5 7.5 14.5 4M16.5 7.5l3.5.5',
+};
+function icone(nomeIcone, tam = 20) {
+  const SVG = 'http://www.w3.org/2000/svg';
+  const s = document.createElementNS(SVG, 'svg');
+  for (const [k, v] of Object.entries({ viewBox: '0 0 24 24', width: tam, height: tam, 'aria-hidden': 'true', class: 'ico' })) s.setAttribute(k, v);
+  const p = document.createElementNS(SVG, 'path');
+  p.setAttribute('d', ICONES[nomeIcone]);
+  s.append(p);
+  return s;
+}
+// Botão só de ícone: o rótulo vai no aria-label e no title (dica do mouse)
+const botaoIcone = (ic, rotulo, props = {}) => h('button', { type: 'button', ...props, className: `ib ${props.className ?? ''}`, title: rotulo, ariaLabel: rotulo }, icone(ic, props.tam ?? 20));
+
+// "Hoje às 16:15" / "Ontem às 16:15" / "12/10/2026 16:15"; a data completa fica no title
+const diaDe = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+const horaCurta = (id) => tsOf(id).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+const dataCompleta = (id) => tsOf(id).toLocaleString('pt-BR', { dateStyle: 'full', timeStyle: 'short' });
+function hora(id) {
+  const d = tsOf(id), dias = Math.round((diaDe(new Date()) - diaDe(d)) / 86_400_000);
+  if (dias === 0) return `Hoje às ${horaCurta(id)}`;
+  if (dias === 1) return `Ontem às ${horaCurta(id)}`;
+  return d.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).replace(',', '');
+}
 const badge = (n) => n > 0 && h('span', { className: 'badge', textContent: n > 99 ? '99+' : String(n) });
 
 let pendente = false, grudarNoFim = true, manterTopo = false, ultimoTotal = 0;
+let msgSel = null; // mensagem com as ações abertas por toque
 
 // prompt() não existe no Electron: diálogo próprio com <dialog> (Enter confirma, Shift+Enter quebra linha, Esc cancela)
 function pedirTexto(titulo, inicial = '', max = 100) {
@@ -374,18 +422,27 @@ function agendarRender() {
   setTimeout(fazer, 150); // janela minimizada não tem rAF, mas o título (menções na barra de tarefas) precisa mudar
 }
 
-// Links de saída: sempre visíveis, até antes de conectar (senão uma falha deixa a janela sem saída)
-const linksConta = () => [
-  h('a', { href: '#', textContent: 'sair', onclick: sair }),
-  ponte()?.abrirConexao && [' · ', h('a', { href: '#', textContent: 'servidor', title: 'Hospedar ou entrar no servidor de um amigo',
-    onclick: (e) => { e.preventDefault(); ponte().abrirConexao(); } })],
+// Sair e trocar de servidor: sempre visíveis, até antes de conectar (senão uma falha deixa a janela sem saída)
+const botoesConta = () => [
+  ponte()?.abrirConexao && botaoIcone('servidor', 'Hospedar ou entrar no servidor de um amigo', { onclick: () => ponte().abrirConexao() }),
+  botaoIcone('sair', 'Sair da conta', { onclick: sair }),
 ];
+const statusConexao = () => (store.conn === 'conectado' ? 'online' : store.conn);
+function painelMe() {
+  return [
+    store.me && avatar(store.me.id, store.me.username),
+    h('div', { className: 'quem' },
+      h('b', { textContent: store.me?.username ?? 'Limb' }),
+      h('small', { className: store.conn === 'conectado' ? 'ok' : '', textContent: statusConexao() })),
+    ...botoesConta(), // h()/trocar() achatam só um nível
+  ];
+}
 
 function render() {
   if (!store.me) { // ainda sem READY: mostra o estado da conexão e como sair
     $('#conn').textContent = store.conn;
     $('#chanName').textContent = store.conn.startsWith('erro') ? 'Não foi possível conectar' : 'Conectando…';
-    trocar($('#me'), linksConta());
+    trocar($('#me'), painelMe());
     return;
   }
   const guild = store.guilds.get(store.guildId);
@@ -393,22 +450,26 @@ function render() {
 
   let totalMencoes = 0;
   trocar($('#guilds'),
+    h('span', { className: 'marca-ico', title: 'Limb' }, icone('marca', 26)),
+    h('span', { className: 'sep' }),
     ...[...store.guilds.values()].map((g) => {
       const mencoes = g.channels.reduce((n, c) => n + mencoesEm(c.id), 0);
       totalMencoes += mencoes;
-      return h('div', { className: 'gwrap' },
-        g.id !== store.guildId && g.channels.some(naoLido) && h('span', { className: 'pill' }),
+      const ativo = g.id === store.guildId;
+      return h('div', { className: `gwrap${ativo ? ' ativo' : ''}` },
+        !ativo && g.channels.some(naoLido) && h('span', { className: 'pill' }),
         h('button', {
-          className: `guild${g.id === store.guildId ? ' on' : ''}`, title: g.name,
-          textContent: g.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 3),
+          className: `guild${ativo ? ' on' : ''}`, title: g.name, ariaLabel: g.name, ariaCurrent: ativo ? 'true' : null,
+          // duas iniciais: "Amigos" vira "Am", e não "A" igual ao avatar de quem se chama Allan
+          textContent: (g.name.trim().split(/\s+/).length > 1 ? g.name.trim().split(/\s+/).map((w) => w[0]).join('') : g.name.trim()).slice(0, 2),
           onclick: () => selecionarGuild(g.id),
         }),
         badge(mencoes),
       );
     }),
-    h('button', { className: 'guild', title: 'Criar servidor', textContent: '+', onclick: async () => {
+    h('button', { className: 'guild criar', title: 'Criar servidor', ariaLabel: 'Criar servidor', onclick: async () => {
       const n = await pedirTexto('Nome do servidor'); if (n) selecionarGuild((await api('POST', '/guilds', { name: n })).id);
-    } }),
+    } }, icone('mais', 22)),
   );
   document.title = `${totalMencoes ? `(${totalMencoes}) ` : ''}Limb`;
   if (totalMencoes !== ultimoTotal) { ultimoTotal = totalMencoes; ponte()?.atencao(totalMencoes); } // app desktop: pisca na barra de tarefas
@@ -416,29 +477,31 @@ function render() {
   $('#guildName').textContent = guild?.name ?? '';
   const canais = guild?.channels ?? [];
   trocar($('#channels'),
-    ...canais.filter((c) => c.type !== 2).map((c) => h('button', {
-      className: `chan${c.id === store.channelId ? ' on' : ''}${naoLido(c) ? ' unread' : ''}`, onclick: () => selecionarCanal(c.id),
-    }, h('span', { textContent: c.name }), badge(mencoesEm(c.id)))),
-    ...canais.filter((c) => c.type === 2).map(renderCanalVoz),
-    guild && h('div', { className: 'adds' },
-      h('button', { className: 'add', textContent: '+ texto', onclick: async () => {
+    guild && h('div', { className: 'grupo' }, h('span', { textContent: 'Canais de texto' }),
+      botaoIcone('mais', 'Criar canal de texto', { tam: 16, onclick: async () => {
         const n = await pedirTexto('Nome do canal de texto'); if (n) selecionarCanal((await api('POST', `/guilds/${guild.id}/channels`, { name: n })).id);
-      } }),
-      h('button', { className: 'add', textContent: '+ voz', onclick: async () => {
+      } })),
+    ...canais.filter((c) => c.type !== 2).map((c) => h('button', {
+      className: `chan${c.id === store.channelId ? ' on' : ''}${naoLido(c) ? ' unread' : ''}`, ariaCurrent: c.id === store.channelId ? 'page' : null,
+      onclick: () => selecionarCanal(c.id),
+    }, icone('hash', 18), h('span', { textContent: c.name }), badge(mencoesEm(c.id)))),
+    guild && h('div', { className: 'grupo' }, h('span', { textContent: 'Canais de voz' }),
+      botaoIcone('mais', 'Criar canal de voz', { tam: 16, onclick: async () => {
         const n = await pedirTexto('Nome do canal de voz'); if (n) await api('POST', `/guilds/${guild.id}/channels`, { name: n, type: 2 });
-      } }),
-    ),
+      } })),
+    ...canais.filter((c) => c.type === 2).map(renderCanalVoz),
   );
   renderPainelVoz();
   renderPalco();
-  trocar($('#me'), h('b', { textContent: store.me.username }), ' · ', linksConta());
-  $('#chanName').textContent = canal ? `# ${canal.name}` : '';
-  $('#conn').textContent = store.conn;
-  $('#input').placeholder = canal ? `Conversar em #${canal.name}` : '';
+  trocar($('#me'), painelMe());
+  trocar($('#chanName'), canal && icone('hash', 20), h('span', { textContent: canal?.name ?? '' }));
+  // "conectado" não precisa ocupar o cabeçalho: só aparece o que pede atenção (reconectando, erro)
+  $('#conn').textContent = store.conn === 'conectado' ? '' : store.conn;
+  $('#input').placeholder = canal ? `Mensagem em #${canal.name}` : '';
   $('#reply').hidden = !store.replyTo;
   if (store.replyTo) trocar($('#reply'),
     'Respondendo a ', h('b', { textContent: store.replyTo.author.username }),
-    h('button', { textContent: '✕', title: 'Cancelar resposta', onclick: () => dispatch({ type: 'REPLY_SET', message: null }) }),
+    botaoIcone('x', 'Cancelar resposta', { tam: 16, onclick: () => dispatch({ type: 'REPLY_SET', message: null }) }),
   );
 
   renderMensagens();
@@ -451,21 +514,24 @@ function render() {
 function renderCanalVoz(c) {
   const dentro = [...store.voiceStates.values()].filter((s) => s.channel_id === c.id);
   return h('div', {},
-    h('button', { className: `chan voice${voz.atual()?.channelId === c.id ? ' on' : ''}`, onclick: () => voz.entrar(c) }, h('span', { textContent: c.name })),
+    h('button', { className: `chan voice${voz.atual()?.channelId === c.id ? ' on' : ''}`, title: 'Entrar no canal de voz', onclick: () => voz.entrar(c) },
+      icone('voz', 18), h('span', { textContent: c.name })),
     dentro.map((s) => h('div', {
       className: `vuser${store.speaking.has(s.user_id) ? ' speaking' : ''}`,
       // clicar em outra pessoa silencia só para você (setLocalMute)
       title: s.user_id === store.me.id ? '' : voz.mutadoLocal(s.user_id) ? 'Reativar áudio desta pessoa' : 'Silenciar só para mim',
       onclick: () => { if (s.user_id !== store.me.id) voz.alternarMutoLocal(s.user_id); },
     },
-      h('span', { className: 'av', style: `background:${cor(s.user_id)}`, textContent: nome(s.user_id)[0].toUpperCase() }),
+      avatar(s.user_id),
       h('span', { className: 'vname', textContent: nome(s.user_id) }),
       s.self_stream && h('button', {
         className: 'ao-vivo', textContent: 'AO VIVO', title: `Assistir a tela de ${nome(s.user_id)}`,
         onclick: (e) => { e.stopPropagation(); assistir(s.user_id); },
       }),
-      s.self_deaf ? h('span', { title: 'Surdo', textContent: '🔇' }) : s.self_mute && h('span', { title: 'Mudo', textContent: '🎙️✖' }),
-      voz.mutadoLocal(s.user_id) && h('span', { title: 'Silenciado por você', textContent: '🔈✖' }),
+      h('span', { className: 'estado' },
+        s.self_deaf ? h('span', { title: 'Áudio desativado', role: 'img', ariaLabel: 'Áudio desativado' }, icone('foneOff', 16))
+          : s.self_mute && h('span', { title: 'Microfone desligado', role: 'img', ariaLabel: 'Microfone desligado' }, icone('micOff', 16)),
+        voz.mutadoLocal(s.user_id) && h('span', { title: 'Silenciado por você', role: 'img', ariaLabel: 'Silenciado por você' }, icone('semSom', 16))),
     )),
   );
 }
@@ -480,13 +546,13 @@ function renderPainelVoz() {
       h('small', { textContent: `${canalPorId(a.channelId)?.name ?? ''} · ${a.conectados} com áudio` }),
       a.transmitindo && h('small', { className: 'ok', textContent: `Transmitindo · ${a.qualidade}` }),
       a.avisoMudo && h('small', { className: 'aviso', role: 'status', textContent: 'Você está mudo' })),
-    h('button', { className: a.mute ? 'off' : '', title: a.mute ? 'Ativar microfone' : 'Silenciar', ariaPressed: String(a.mute), textContent: '🎙️', onclick: voz.alternarMudo }),
-    h('button', { className: a.deaf ? 'off' : '', title: a.deaf ? 'Ativar áudio' : 'Ensurdecer', ariaPressed: String(a.deaf), textContent: '🎧', onclick: voz.alternarSurdo }),
-    h('button', {
-      className: a.transmitindo ? 'on' : '', title: a.transmitindo ? 'Parar de compartilhar' : 'Compartilhar tela',
-      ariaPressed: String(a.transmitindo), textContent: '🖥️', onclick: () => (voz.atual()?.transmitindo ? voz.pararTela() : escolherTela()), // estado na hora do clique
+    botaoIcone(a.mute ? 'micOff' : 'mic', a.mute ? 'Ligar microfone' : 'Desligar microfone', { className: a.mute ? 'off' : '', ariaPressed: String(a.mute), onclick: voz.alternarMudo }),
+    botaoIcone(a.deaf ? 'foneOff' : 'fone', a.deaf ? 'Ligar áudio' : 'Desligar áudio', { className: a.deaf ? 'off' : '', ariaPressed: String(a.deaf), onclick: voz.alternarSurdo }),
+    botaoIcone('tela', a.transmitindo ? 'Parar de compartilhar' : 'Compartilhar tela', {
+      className: a.transmitindo ? 'on' : '', ariaPressed: String(a.transmitindo),
+      onclick: () => (voz.atual()?.transmitindo ? voz.pararTela() : escolherTela()), // estado na hora do clique
     }),
-    h('button', { className: 'hangup', title: 'Desconectar', textContent: '📞', onclick: voz.sair }),
+    botaoIcone('desligar', 'Sair do canal de voz', { className: 'perigo', onclick: voz.sair }),
   );
 }
 
@@ -553,7 +619,7 @@ async function escolherTela() {
   if (nativo) {
     const fontes = await nativo.fontesDeTela();
     trocar($('#telaFontes'), fontes.map((f) => h('button', { type: 'button', className: 'fonte', title: f.nome, onclick: () => compartilhar(f.id) },
-      h('img', { src: f.miniatura, alt: '' }), h('span', { textContent: `${f.tela ? '🖥️' : '🪟'} ${f.nome}` }))));
+      h('img', { src: f.miniatura, alt: '' }), h('span', {}, icone(f.tela ? 'tela' : 'janela', 14), f.nome))));
   }
   telaDlg.onclose = () => { if (telaDlg.returnValue === 'ok' && !nativo) compartilhar(); };
   telaDlg.returnValue = '';
@@ -568,29 +634,35 @@ const agrupa = (ant, m) => ant && !ant.failed && ant.author.id === m.author.id &
 function renderMensagem(m, ant) {
   const meu = m.author.id === store.me.id, real = !m.pending && !m.failed;
   const grupo = agrupa(ant, m);
-  const ref = m.message_reference && h('div', { className: 'ref' },
+  const ref = m.message_reference && h('div', { className: 'ref' }, icone('responder', 14),
     m.referenced_message
       ? [h('b', { textContent: `@${m.referenced_message.author.username} ` }), markdown(m.referenced_message.content.slice(0, 100))]
       : h('i', { textContent: 'Mensagem original apagada' }));
-  return h('div', { className: `msg${grupo ? ' cont' : ''}${m.pending ? ' pending' : ''}${m.failed ? ' failed' : ''}${m.mentions?.includes(store.me.id) ? ' mentioned' : ''}` },
+  return h('div', {
+    className: `msg${grupo ? ' cont' : ''}${m.pending ? ' pending' : ''}${m.failed ? ' failed' : ''}${m.mentions?.includes(store.me.id) ? ' mentioned' : ''}${msgSel === m.id ? ' sel' : ''}`,
+    // toque (sem hover): tocar na mensagem mostra as ações; tocar de novo esconde
+    onclick: (e) => { if (!e.target.closest('button, a, .spoiler') && real) { msgSel = msgSel === m.id ? null : m.id; agendarRender(); } },
+  },
     ref,
-    !grupo && h('div', { className: 'av', style: `background:${cor(m.author.id)}`, textContent: m.author.username[0].toUpperCase() }),
+    !grupo && avatar(m.author.id, m.author.username),
     !grupo && h('span', { className: 'who', textContent: m.author.username }),
-    !grupo && h('span', { className: 'when', textContent: m.pending ? 'enviando…' : m.failed ? 'falhou' : hora(m.id) }),
+    !grupo && h('span', { className: 'when', title: real ? dataCompleta(m.id) : '', textContent: m.pending ? 'enviando…' : m.failed ? 'não enviada' : hora(m.id) }),
+    grupo && real && h('span', { className: 'hh', title: dataCompleta(m.id), textContent: horaCurta(m.id) }),
     h('div', { className: 'body' }, markdown(m.content), m.edited_timestamp && h('span', { className: 'edited', textContent: ' (editado)' })),
     m.reactions?.length > 0 && h('div', { className: 'reactions' }, m.reactions.map((r) => h('button', {
       className: `react${r.me ? ' me' : ''}`, textContent: `${r.emoji} ${r.count}`, disabled: !real, onclick: () => reagir(m, r.emoji),
     }))),
-    real && h('div', { className: 'tools' },
-      EMOJIS.map((e) => h('button', { textContent: e, title: `Reagir com ${e}`, onclick: () => reagir(m, e) })),
-      h('button', { textContent: 'Responder', onclick: () => { dispatch({ type: 'REPLY_SET', message: m }); $('#input').focus(); } }),
-      meu && h('button', { textContent: 'Editar', onclick: async () => {
+    real && h('div', { className: 'tools', role: 'toolbar', ariaLabel: 'Ações da mensagem' },
+      EMOJIS.map((e) => h('button', { type: 'button', textContent: e, title: `Reagir com ${e}`, ariaLabel: `Reagir com ${e}`, onclick: () => reagir(m, e) })),
+      h('span', { className: 'div' }),
+      h('button', { type: 'button', title: 'Responder', ariaLabel: 'Responder', onclick: () => { msgSel = null; dispatch({ type: 'REPLY_SET', message: m }); $('#input').focus(); } }, icone('responder', 18)),
+      meu && h('button', { type: 'button', title: 'Editar', ariaLabel: 'Editar', onclick: async () => {
         const c = await pedirTexto('Editar mensagem', m.content, 2000);
         if (c && c !== m.content) api('PATCH', `/channels/${m.channel_id}/messages/${m.id}`, { content: c }).catch(alert);
-      } }),
-      meu && h('button', { textContent: 'Apagar', onclick: () => {
-        if (confirm('Apagar mensagem?')) api('DELETE', `/channels/${m.channel_id}/messages/${m.id}`).catch(alert);
-      } }),
+      } }, icone('editar', 18)),
+      meu && h('button', { type: 'button', className: 'perigo', title: 'Apagar', ariaLabel: 'Apagar', onclick: () => {
+        if (confirm('Apagar esta mensagem?')) api('DELETE', `/channels/${m.channel_id}/messages/${m.id}`).catch(alert);
+      } }, icone('apagar', 18)),
     ),
   );
 }
@@ -601,10 +673,16 @@ function renderMensagens() {
   const noFim = grudarNoFim || box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   const alturaAntes = box.scrollHeight, topoAntes = box.scrollTop;
   const lista = ch?.list ?? [];
+  const canal = canalAtual();
   trocar(box,
     ch?.hasMore && h('button', { className: 'more', textContent: 'Carregar mensagens antigas', onclick: () => {
       grudarNoFim = false; manterTopo = true; carregarMensagens(store.channelId, lista.find((m) => !m.pending)?.id);
     } }),
+    // começo do canal: diz onde você está em vez de uma tela vazia
+    ch && !ch.hasMore && canal && h('div', { className: 'vazio' },
+      h('div', { className: 'marca-ico' }, icone('hash', 28)),
+      h('b', { textContent: `Bem-vindo a #${canal.name}` }),
+      h('span', { textContent: lista.length ? `Este é o começo do canal #${canal.name}.` : 'Ninguém escreveu aqui ainda. Que tal começar a conversa?' })),
     ...lista.map((m, i) => renderMensagem(m, lista[i - 1])),
   );
   if (manterTopo) { box.scrollTop = topoAntes + box.scrollHeight - alturaAntes; manterTopo = false; }
@@ -620,7 +698,7 @@ function renderTyping() {
 
 function renderMembros() {
   const users = [...store.users.values()].sort((a, b) => a.username.localeCompare(b.username));
-  const linha = (u) => h('div', { className: `member${store.online.has(u.id) ? '' : ' off'}` }, h('span', { className: 'dot' }), u.username);
+  const linha = (u) => h('div', { className: `member${store.online.has(u.id) ? '' : ' off'}` }, avatar(u.id, u.username), h('span', { textContent: u.username }));
   const on = users.filter((u) => store.online.has(u.id)), off = users.filter((u) => !store.online.has(u.id));
   return [h('h4', { textContent: `Online — ${on.length}` }), ...on.map(linha), h('h4', { textContent: `Offline — ${off.length}` }), ...off.map(linha)];
 }
@@ -628,14 +706,16 @@ function renderMembros() {
 function renderBusca() {
   const s = store.search;
   const canalNome = (id) => canalPorId(id)?.name ?? '?';
+  const n = s.total ?? 0;
   return [
-    h('h4', { textContent: s.loading && !s.messages.length ? 'Buscando…' : `${s.total ?? 0} resultado(s)` }),
-    h('button', { className: 'add', textContent: 'Fechar busca', onclick: () => { $('#search').value = ''; dispatch({ type: 'SEARCH_CLEAR' }); } }),
-    h('div', { className: 'results' }, s.messages.map((m) => h('div', { className: 'hit', onclick: () => selecionarCanal(m.channel_id) },
+    h('h4', {}, h('span', { textContent: s.loading && !s.messages.length ? 'Buscando…' : `${n} ${n === 1 ? 'resultado' : 'resultados'}` }),
+      botaoIcone('x', 'Fechar busca', { tam: 16, onclick: fecharBusca })),
+    !s.loading && n === 0 && h('p', { className: 'nada', textContent: 'Nada encontrado. Tente outra palavra ou outro filtro.' }),
+    h('div', { className: 'results' }, s.messages.map((m) => h('button', { type: 'button', className: 'hit', onclick: () => { selecionarCanal(m.channel_id); document.body.classList.remove('membros'); } },
       h('small', { textContent: `#${canalNome(m.channel_id)} · ${m.author.username} · ${hora(m.id)}` }),
       h('div', {}, markdown(m.content)),
     ))),
-    s.messages.length < (s.total ?? 0) && h('button', { className: 'add', textContent: 'Mais resultados', onclick: () => buscar(s.q, s.messages.length).catch(alert) }),
+    s.messages.length < n && h('button', { className: 'mais', textContent: 'Mais resultados', onclick: () => buscar(s.q, s.messages.length).catch(alert) }),
   ];
 }
 setInterval(() => { if (store.typing.size) renderTyping(); }, 1000);
@@ -644,8 +724,22 @@ setInterval(() => { if (store.typing.size) renderTyping(); }, 1000);
 let ultimoTyping = 0;
 const input = $('#input');
 const ajustarAltura = () => { input.style.height = 'auto'; input.style.height = `${Math.min(input.scrollHeight, 200)}px`; };
+const botaoEnviar = $('#enviar');
+const atualizarEnviar = () => { botaoEnviar.disabled = !input.value.trim(); };
+function enviarDoInput() {
+  const content = input.value.trim();
+  if (!content || !store.channelId) return;
+  input.value = '';
+  ajustarAltura();
+  atualizarEnviar();
+  ultimoTyping = 0;
+  grudarNoFim = true;
+  enviar(content);
+}
+botaoEnviar.addEventListener('click', () => { enviarDoInput(); input.focus(); });
 input.addEventListener('input', () => {
   ajustarAltura();
+  atualizarEnviar();
   if (!store.channelId || !input.value.trim() || Date.now() - ultimoTyping < 8000) return;
   ultimoTyping = Date.now();
   api('POST', `/channels/${store.channelId}/typing`).catch(() => {});
@@ -655,18 +749,29 @@ input.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && store.replyTo) dispatch({ type: 'REPLY_SET', message: null });
   if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
   e.preventDefault();
-  const content = input.value.trim();
-  if (!content || !store.channelId) return;
-  input.value = '';
-  ajustarAltura();
-  ultimoTyping = 0;
-  grudarNoFim = true;
-  enviar(content);
+  enviarDoInput();
 });
+function fecharBusca() {
+  $('#search').value = '';
+  document.body.classList.remove('busca-aberta');
+  dispatch({ type: 'SEARCH_CLEAR' });
+}
 $('#search').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { fecharBusca(); e.target.blur(); return; }
   if (e.key !== 'Enter') return;
   const q = e.target.value.trim();
-  q ? buscar(q).catch(alert) : dispatch({ type: 'SEARCH_CLEAR' });
+  q ? (e.target.blur(), buscar(q).catch(alert)) : fecharBusca();
+});
+// celular: a busca abre por cima do cabeçalho e fecha ao sair do campo vazio
+$('#abrirBusca').addEventListener('click', () => { document.body.classList.add('busca-aberta'); $('#search').focus(); });
+$('#search').addEventListener('blur', (e) => { if (!e.target.value.trim()) document.body.classList.remove('busca-aberta'); });
+$('#abrirNav').addEventListener('click', () => document.body.classList.toggle('nav'));
+$('#abrirMembros').addEventListener('click', () => document.body.classList.toggle('membros'));
+$('#veu').addEventListener('click', () => { document.body.classList.remove('nav', 'membros'); if (store.search) fecharBusca(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || document.querySelector('dialog[open]')) return;
+  document.body.classList.remove('nav', 'membros');
+  if (msgSel) { msgSel = null; agendarRender(); }
 });
 $('#pedir textarea').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#pedir').close('ok'); }
@@ -694,6 +799,7 @@ function sair(e) {
   store.messages.clear();
   $('#app').hidden = true;
   $('#login').hidden = false;
+  document.body.classList.remove('nav', 'membros', 'busca-aberta');
 }
 $('#login form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -702,6 +808,8 @@ $('#login form').addEventListener('submit', async (e) => {
   catch (err) { $('#login .error').textContent = err.message; }
   f.password.value = '';
 });
+// Diz onde a conta vai ser criada: no app desktop, o servidor embutido é "este computador"
+$('#ondeServidor').textContent = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) ? 'este computador' : location.host;
 // Servidor com código de convite: mostra o campo
 fetch('/api/info').then((r) => r.json()).then((i) => { $('#conviteCampo').hidden = !i.convite; }).catch(() => {});
 // Convite colado no app desktop chega como #convite=…: preenche o campo e tira do endereço
