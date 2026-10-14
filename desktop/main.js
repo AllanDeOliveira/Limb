@@ -364,8 +364,8 @@ function mostrarJanela() {
 }
 
 // ── Bandeja (perto do relógio): só existe hospedando para amigos ────────────────────────────
-// O galho do logotipo em PNG 32×32 (scaleFactor 2 = 16 pt na bandeja): o projeto não empacota arquivos de imagem
-const iconeBandeja = () => nativeImage.createFromBuffer(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAqklEQVR42u2XQQ6AIAwEufgK47/8f+IH/ICevJgCS3dbEwMJJ1t2RLDdUoxxHvsVMUtvRAlDIFniJgSSsK2LJMaEQBZ+JhNjAqBv3xJ4Px+CUACgMakAKIQMoAbRy0kDqOWGfgIEIuwWpO0AItTaOQpg9MDJADynPRzAXZQUAFRVZAHosswASPoCL4CsMVH+iifABJgAbn+gaMspc6IyJuHu6Df+8DOXbGndZSiyP1MIuyYAAAAASUVORK5CYII=', 'base64'), { scaleFactor: 2 });
+// O galho do logotipo em PNG 32×32 (scaleFactor 2 = 16 pt na bandeja), o mesmo desenho do build/icon.png
+const iconeBandeja = () => nativeImage.createFromBuffer(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABRklEQVR42mNgwAE+PY3Q+/Q0ouXT04ijn55GvPv0NOI/ifgdVC/IDD0GYsGnpxFyn55GLCHDQkIYZKYcIct9yfQtKaHii8/y/3TCvtiC/R0dHfAOJTpoFOcE0wRyav8/QFiPAZpNBsoBLQzQvEq0pp3rnf4vmW1FLQccZSA18TnZCf+XlWb9//x2CFwsPVHp/9ReE7ISIwOpmtAdcOeCP5ivrMAOZpNqHsUOAOH6Cm2wWFG22v+3D8Lo54DH14L+97YZ/vd0FQOLwbCFqcD/zkZ92jpgxgTT/2rKHHBLrc0F/4cFSoMtB/HzMlRp6wAYrizS/H/6gCeKGlKigWwHKCmw/9+1wYnirEi2A2ZOMKVKWUC2A26TkeVolg1HHTDkHfBuAB3wblBUxwPeIBnYJtmAN0oHRbN8wDsmg6JrNig6pwPRPQcAgjphnTu15ekAAAAASUVORK5CYII=', 'base64'), { scaleFactor: 2 });
 
 // "Iniciar com o Windows" só faz sentido no app instalado/portátil (no `npm run desktop`, abriria o Electron puro)
 const podeIniciarComWindows = app.isPackaged && process.platform === 'win32';
