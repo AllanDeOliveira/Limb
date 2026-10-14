@@ -80,7 +80,7 @@ function preferirCodec(transceptor, codec) {
 const KBPS_VOZ = [32, 64, 96, 128];
 
 // tocar(nome): sons da chamada (sons.js); opcional, para este módulo não depender deles
-export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId, tocar = () => {} }) {
+export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId, tocar = () => {}, avisarErro = console.error }) {
   // setLocalMute do discord_voice.node: silenciar alguém só para mim; vale entre conexões
   const mutadosLocal = new Set();
   let v = null; // conexão atual
@@ -721,10 +721,10 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId, toc
     definirVolumeGeral(valor) { prefs.volumeGeral = Math.min(1, Math.max(0, Number(valor) || 0)); salvarPrefs(); aplicarGanhos(); },
     async definirSaida(id, nome) {
       prefs.saida = String(id ?? ''); if (nome) prefs.saidaNome = nome; salvarPrefs();
-      if (v?.saida.ctx.setSinkId) await v.saida.ctx.setSinkId(prefs.saida).catch((e) => alert(`Não foi possível usar essa saída: ${e.message}`));
+      if (v?.saida.ctx.setSinkId) await v.saida.ctx.setSinkId(prefs.saida).catch((e) => avisarErro(`Não foi possível usar essa saída: ${e.message}`));
     },
     // nome: para o <select> mostrar "Fone X (desconectado)" quando ele sumir
-    async definirEntrada(id, nome) { prefs.entrada = String(id ?? ''); if (nome) prefs.entradaNome = nome; salvarPrefs(); teste?.reiniciar(); await reabrirMicrofone().catch((e) => alert(`Não foi possível usar esse microfone: ${e.message}`)); },
+    async definirEntrada(id, nome) { prefs.entrada = String(id ?? ''); if (nome) prefs.entradaNome = nome; salvarPrefs(); teste?.reiniciar(); await reabrirMicrofone().catch((e) => avisarErro(`Não foi possível usar esse microfone: ${e.message}`)); },
     async definirProcessamento({ ruido, eco }) {
       if (ruido != null) prefs.ruido = !!ruido;
       if (eco != null) prefs.eco = !!eco;

@@ -9,17 +9,8 @@
 <!-- só scripts/conexões da própria origem; estilos inline são usados pelas cores dos avatares -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
 
+<link rel="stylesheet" href="tokens.css">
 <style>
-  /* Paleta do Limb: cinzas neutros e o limão (#f2e558), complementar do azul de antes no círculo
-     cromático. O limão é claro: texto em cima dele é sempre escuro (--acc-tinta). */
-  :root {
-    --bg0: #111214; --bg1: #17191b; --bg2: #1e2023; --bg3: #2a2d31; --bg4: #34383d; --linha: #2c2f33;
-    --txt: #e8e9ea; --mut: #a4a9b0; --fraco: #80868e;
-    --acc: #f2e558; --acc-tinta: #1d1b05; --acc-suave: rgba(242, 229, 88, .14); --acc-texto: #f5ec86;
-    --ok: #3ecf7a; --err: #ff6166; --link: #7cc4ff;
-    --raio: 10px;
-    color-scheme: dark;
-  }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; } /* senão o display:grid de #login/#app vence o atributo */
   body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg2); color: var(--txt); height: 100vh; height: 100dvh; overflow: hidden; }
@@ -33,7 +24,13 @@
   .ib:hover { background: var(--bg3); color: var(--txt); }
   .ib.off { color: var(--err); background: rgba(255, 97, 102, .14); }
   .ib.on { color: var(--acc); background: var(--acc-suave); }
-  .ib.perigo:hover { background: var(--err); color: #fff; }
+  /* Campo de texto e botão de destaque: um estilo só para o app inteiro (cada lugar só muda o tamanho) */
+  .entrada { background: var(--bg0); border: 1px solid var(--linha); border-radius: 8px; padding: 9px 10px; font-weight: 400; }
+  .entrada:focus { border-color: var(--acc); outline: none; }
+  button.ok { border: 0; border-radius: 8px; padding: 9px 16px; background: var(--acc); color: var(--acc-tinta); font-weight: 700; }
+  button.ok:hover:not(:disabled) { background: var(--acc); filter: brightness(1.06); }
+  button.ok:disabled { opacity: .6; cursor: default; }
+  .ib.perigo:hover { background: var(--perigo); color: var(--txt-forte); }
 
   /* Marca */
   .marca { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: -.02em; }
@@ -65,10 +62,10 @@
   .chan .ico { color: var(--fraco); }
   .chan span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chan:hover { background: var(--bg3); color: var(--txt); }
-  .chan.on { background: var(--bg4); color: #fff; }
+  .chan.on { background: var(--bg4); color: var(--txt-forte); }
   .chan.on .ico { color: var(--acc); }
-  .chan.unread { color: #fff; font-weight: 600; }
-  .badge { background: var(--err); color: #fff; border-radius: 9px; font-size: 12px; font-weight: 700; padding: 0 6px; line-height: 18px; }
+  .chan.unread { color: var(--txt-forte); font-weight: 600; }
+  .badge { background: var(--perigo); color: var(--txt-forte); border-radius: 9px; font-size: 12px; font-weight: 700; padding: 0 6px; line-height: 18px; }
 
   /* voz na lista de canais */
   .vuser { display: flex; align-items: center; gap: 8px; padding: 3px 8px 3px 32px; font-size: 14px; color: var(--mut); border-radius: 6px; min-height: 30px; }
@@ -89,7 +86,7 @@
   #voice .vstatus small.aviso { white-space: normal; }
   #alertaHost { display: flex; align-items: center; gap: 10px; padding: 8px 12px 8px 16px; background: rgba(255, 97, 102, .14); border-bottom: 1px solid rgba(255, 97, 102, .35); font-size: 14px; flex: none; }
   #alertaHost span { flex: 1; }
-  #alertaHost button { border: 0; border-radius: 8px; padding: 6px 12px; background: var(--acc); color: var(--acc-tinta); font-weight: 700; white-space: nowrap; }
+  #alertaHost button { padding: 6px 12px; white-space: nowrap; }
   #voice .vstatus small.ok { color: var(--ok); }
   #voice .ib { flex: 1; }
 
@@ -101,9 +98,9 @@
   #me .quem small.ok { color: var(--ok); }
   #me .av { width: 34px; height: 34px; font-size: 14px; }
   #me .ib { width: 32px; height: 32px; }
-  #me .ib + .ib { margin-left: -8px; } /* até 4 botões: o nome ainda cabe */
+  #me .ib + .ib { margin-left: -8px; } /* até 3 botões: o nome ainda cabe */
 
-  .av { border-radius: 50%; display: grid; place-items: center; font-weight: 700; color: #fff; flex: none; }
+  .av { border-radius: 50%; display: grid; place-items: center; font-weight: 700; color: var(--txt-forte); flex: none; }
 
   /* ── Conversa ──────────────────────────────────────────────────────────── */
   main { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
@@ -114,7 +111,7 @@
   #conn { font-size: 12px; color: var(--mut); white-space: nowrap; }
   .busca { position: relative; }
   #search { background: var(--bg0); border: 1px solid transparent; border-radius: 8px; padding: 7px 10px 7px 32px; width: 220px; transition: width .15s; }
-  #search:focus { width: 300px; border-color: var(--bg4); outline: none; }
+  #search:focus { width: 300px; border-color: var(--acc); outline: none; }
   .busca > .ico { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); color: var(--fraco); pointer-events: none; }
   #buscaDica { position: absolute; right: 0; top: calc(100% + 6px); width: 300px; background: var(--bg0); border: 1px solid var(--linha); border-radius: var(--raio); padding: 10px 12px; font-size: 13px; color: var(--mut); z-index: 20; box-shadow: 0 12px 32px rgba(0, 0, 0, .45); display: none; }
   .busca:focus-within #buscaDica { display: block; }
@@ -132,7 +129,7 @@
   .msg { padding: 2px 16px 2px 72px; position: relative; }
   .msg:not(.cont) { margin-top: 14px; }
   .msg:hover, .msg.sel { background: rgba(255, 255, 255, .03); }
-  .msg .who { font-weight: 600; color: #fff; }
+  .msg .who { font-weight: 600; color: var(--txt-forte); }
   .msg .when { color: var(--fraco); font-size: 12px; margin-left: 8px; }
   .msg .hh { position: absolute; left: 0; width: 60px; text-align: right; top: 5px; font-size: 11px; color: var(--fraco); display: none; }
   .msg.cont:hover .hh, .msg.cont.sel .hh { display: block; }
@@ -144,7 +141,7 @@
   .msg:hover .tools, .msg.sel .tools, .msg:focus-within .tools { display: flex; }
   .tools button { background: none; border: 0; border-radius: 6px; width: 32px; height: 32px; display: grid; place-items: center; color: var(--mut); font-size: 16px; padding: 0; }
   .tools button:hover { background: var(--bg3); color: var(--txt); }
-  .tools button.perigo:hover { background: var(--err); color: #fff; }
+  .tools button.perigo:hover { background: var(--perigo); color: var(--txt-forte); }
   .tools .div { width: 1px; background: var(--linha); margin: 4px 2px; }
   .edited { color: var(--fraco); font-size: 12px; }
   .more { align-self: center; margin: 8px auto 12px; background: var(--bg3); border: 0; border-radius: 999px; padding: 6px 14px; font-size: 13px; }
@@ -172,7 +169,7 @@
   #reply .ib { margin-left: auto; width: 30px; height: 30px; }
   .caixa-msg { display: flex; align-items: flex-end; gap: 4px; background: var(--bg3); border-radius: var(--raio); padding: 4px 4px 4px 14px; }
   #reply:not([hidden]) + .caixa-msg { border-radius: 0 0 var(--raio) var(--raio); }
-  .caixa-msg:focus-within { box-shadow: 0 0 0 1px var(--bg4); }
+  .caixa-msg:focus-within { box-shadow: 0 0 0 1px var(--acc); }
   #input { flex: 1; display: block; background: none; border: 0; padding: 8px 0; resize: none; max-height: 200px; min-height: 38px; line-height: 1.45; }
   #input:focus { outline: none; }
   #input::placeholder, #search::placeholder { color: var(--fraco); }
@@ -208,12 +205,10 @@
   #login h2 { margin: 6px 0 2px; font-size: 20px; }
   #login .onde { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--mut); background: var(--bg1); border-radius: 8px; padding: 8px 10px; }
   #login .onde b { color: var(--txt); font-weight: 600; word-break: break-all; }
-  #login input { background: var(--bg0); border: 1px solid var(--linha); border-radius: 8px; padding: 11px 12px; font-weight: 400; }
-  #login input:focus { border-color: var(--acc); outline: none; }
+  #login .entrada { padding: 11px 12px; }
   #login label { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
   #login label small { font-weight: 400; color: var(--mut); }
-  #login button.principal { background: var(--acc); color: var(--acc-tinta); border: 0; border-radius: 8px; padding: 12px; font-weight: 700; }
-  #login button.principal:hover { filter: brightness(1.06); }
+  #login button.principal { padding: 12px; }
   #login button.link { background: none; border: 0; color: var(--mut); text-decoration: underline; padding: 4px; justify-self: center; }
   #login button.link:hover { color: var(--txt); }
   .error { color: var(--err); font-size: 13px; min-height: 1em; }
@@ -254,7 +249,7 @@
   #palco .vol { display: flex; align-items: center; gap: 6px; color: var(--mut); }
   #palco video { flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #000; }
   #palco p { margin: auto; color: var(--mut); }
-  .ao-vivo { background: var(--err); color: #fff; font-size: 11px; font-weight: 800; letter-spacing: .03em; border-radius: 4px; padding: 1px 6px; }
+  .ao-vivo { background: var(--perigo); color: var(--txt-forte); font-size: 11px; font-weight: 800; letter-spacing: .03em; border-radius: 4px; padding: 1px 6px; }
   button.ao-vivo { border: 0; cursor: pointer; }
   input[type=range], input[type=checkbox] { accent-color: var(--acc); }
 
@@ -262,10 +257,19 @@
   dialog { background: var(--bg2); color: var(--txt); border: 1px solid var(--linha); border-radius: 14px; padding: 20px; box-shadow: 0 24px 60px rgba(0, 0, 0, .5); }
   dialog::backdrop { background: rgba(0, 0, 0, .6); }
   dialog h3 { margin: 0 0 12px; }
-  dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 16px 0 0; padding: 0; }
+  dialog menu { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin: 16px 0 0; padding: 0; }
+  dialog menu button.perigo, dialog menu button.perigo:hover { background: var(--perigo); color: var(--txt-forte); font-weight: 700; }
+  #confirmar { width: min(400px, calc(100vw - 32px)); }
+  #confirmar p { margin: 0; }
+  /* sair fica longe do "Pronto": empurrado para a esquerda, vermelho só no hover */
+  #sairConta { margin-right: auto; }
+  #sairConta:hover { background: var(--perigo); color: var(--txt-forte); }
+  /* Erro de uma ação (no lugar do alert()): popover fica na camada do topo, acima de um diálogo aberto */
+  #toast { inset: auto 16px 16px auto; margin: 0; max-width: min(420px, calc(100vw - 32px)); background: var(--bg0); color: var(--txt);
+    border: 1px solid var(--linha); border-left: 3px solid var(--err); border-radius: var(--raio); padding: 10px 14px; font-size: 14px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .45); }
   dialog menu button { border: 0; border-radius: 8px; padding: 9px 16px; background: var(--bg3); }
   dialog menu button:hover { background: var(--bg4); }
-  dialog menu .ok, dialog menu .ok:hover { background: var(--acc); color: var(--acc-tinta); font-weight: 700; }
   #telaDlg { width: min(760px, calc(100vw - 32px)); }
   #telaFontes { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; max-height: 50vh; overflow-y: auto; }
   #telaFontes:empty { display: none; }
@@ -274,7 +278,7 @@
   .fonte img { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; border-radius: 4px; }
   .fonte span { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
   #telaDlg .opcoes { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 14px; align-items: center; }
-  #telaDlg select { background: var(--bg0); border: 1px solid var(--linha); border-radius: 6px; padding: 6px; margin-left: 6px; }
+  #telaDlg select { margin-left: 6px; }
   #telaDlg[data-desktop] #telaOk { display: none; } /* no app desktop, clicar na fonte já compartilha */
   #telaAvancado { margin-top: 12px; font-size: 14px; }
   #telaAvancado summary { color: var(--mut); cursor: pointer; width: max-content; }
@@ -285,8 +289,7 @@
   #audioDlg { width: min(880px, calc(100vw - 32px)); }
   #servDlg { width: min(480px, calc(100vw - 32px)); }
   #convidarDlg { width: min(460px, calc(100vw - 32px)); }
-  #convidarLink { background: var(--bg0); border: 1px solid var(--linha); border-radius: 8px; padding: 9px 10px; font-weight: 400; width: 100%; }
-  #convidarLink:focus { border-color: var(--acc); outline: none; }
+  #convidarLink { width: 100%; }
   #convidarStatus { margin-top: 10px; }
   #convidarStatus:empty { display: none; }
   #contaDlg { width: min(460px, calc(100vw - 32px)); }
@@ -294,17 +297,14 @@
   #contaDlg h4:focus { outline: none; }
   #contaDlg form + form h4 { margin: 22px 0 8px; }
   #contaDlg form + form .dica { margin-bottom: 10px; }
-  #contaDlg input[type=password] { background: var(--bg0); border: 1px solid var(--linha); border-radius: 8px; padding: 9px 10px; font-weight: 400; }
-  #contaDlg input[type=password]:focus { border-color: var(--acc); outline: none; }
   #contaDlg .acoes { display: flex; justify-content: flex-end; }
-  #contaDlg .acoes .ok { border: 0; border-radius: 8px; padding: 9px 16px; background: var(--acc); color: var(--acc-tinta); font-weight: 700; }
-  #contaDlg .acoes .ok:disabled { opacity: .6; }
-  #sairOutros:hover:not(:disabled) { background: var(--err); color: #fff; }
+  #sairOutros { border: 0; border-radius: 8px; padding: 7px 12px; background: var(--bg3); }
+  #sairOutros:hover:not(:disabled) { background: var(--perigo); color: var(--txt-forte); }
   #sairOutros:disabled { opacity: .5; cursor: default; }
   .status { margin: 0; font-size: 13px; color: var(--mut); }
   .status.ok { color: var(--ok); } .status.erro { color: var(--err); }
   .servlista .desconectar { border: 0; border-radius: 8px; padding: 7px 12px; background: var(--bg3); white-space: nowrap; }
-  .servlista .desconectar:hover:not(:disabled) { background: var(--err); color: #fff; }
+  .servlista .desconectar:hover:not(:disabled) { background: var(--perigo); color: var(--txt-forte); }
   .servlista { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 6px; max-height: 40vh; overflow-y: auto; }
   .servlista .srv { display: flex; align-items: center; gap: 10px; background: var(--bg1); border: 1px solid var(--linha); border-radius: 10px; padding: 8px 8px 8px 12px; }
   .servlista .srv.atual { border-color: var(--acc); }
@@ -314,17 +314,15 @@
   .servlista .info b, .servlista .info small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .servlista .info small { color: var(--mut); font-size: 12px; }
   .servlista .tag { font-size: 12px; font-weight: 800; color: var(--acc); padding-right: 6px; }
-  .servlista .ok { border: 0; border-radius: 8px; padding: 7px 14px; background: var(--acc); color: var(--acc-tinta); font-weight: 700; }
-  .servlista .ok:disabled { opacity: .6; }
-  #servConvite { background: var(--bg0); border: 1px solid var(--linha); border-radius: 8px; padding: 10px; resize: vertical; font-weight: 400; width: 100%; }
-  #servConvite:focus { border-color: var(--acc); outline: none; }
+  .servlista .ok { padding: 7px 14px; }
+  #servConvite { resize: vertical; width: 100%; }
   #servErro { margin: 8px 0 0; }
   .campos { display: grid; gap: 14px; }
   /* item de grid não encolhe abaixo do conteúdo: sem isto, um nome de dispositivo comprido alarga o select e corta o diálogo */
   .campos > *, .campos label, .campos fieldset > * { min-width: 0; }
   .campos label { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
   .campos label.check { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; font-weight: 400; } /* dica que não cabe desce inteira, em vez de espremer o texto */
-  .campos select { background: var(--bg0); border: 1px solid var(--linha); border-radius: 8px; padding: 8px; font-weight: 400; width: 100%; text-overflow: ellipsis; }
+  .campos select { width: 100%; text-overflow: ellipsis; }
   /* Voz e áudio: voz | sons lado a lado no computador (cabe sem rolar); uma coluna em tela estreita */
   #audioDlg .colunas { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 0 28px; }
   #audioDlg .colunas > .campos { align-content: start; }
@@ -359,10 +357,11 @@
   .campos .testar:hover:not(:disabled) { background: var(--bg4); }
   .vuser .vvol { color: var(--acc-texto); font-size: 11px; font-variant-numeric: tabular-nums; }
   #pedir label { display: grid; gap: 8px; font-weight: 600; }
-  #pedir textarea { background: var(--bg0); border: 1px solid var(--linha); border-radius: 8px; padding: 10px; resize: vertical; font-weight: 400; }
-  #pedir textarea:focus { border-color: var(--acc); outline: none; }
+  #pedir textarea { resize: vertical; }
 
   #veu { display: none; }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 
   /* ── Telas médias: membros viram gaveta à direita ─────────────────────── */
   @media (max-width: 1100px) {
@@ -386,7 +385,7 @@
     header h3 { padding-left: 2px; }
     .busca { display: none; }
     body.busca-aberta .busca { display: block; position: absolute; left: 6px; right: 6px; top: 7px; z-index: 6; }
-    body.busca-aberta #search, body.busca-aberta #search:focus { width: 100%; padding-top: 9px; padding-bottom: 9px; border-color: var(--bg4); }
+    body.busca-aberta #search, body.busca-aberta #search:focus { width: 100%; padding-top: 9px; padding-bottom: 9px; border-color: var(--acc); }
     body.busca-aberta #buscaDica { left: 0; right: 0; width: auto; }
     #conn { display: none; }
     .vazio { padding-left: 16px; }
@@ -396,7 +395,8 @@
     .msg .tools { right: 8px; }
     #composer { padding: 0 8px; }
     #typing { padding: 2px 12px max(2px, env(safe-area-inset-bottom)); }
-    #input { font-size: 16px; } /* menos de 16px faz o iOS dar zoom no foco */
+    #input { font-size: 16px; min-height: 40px; } /* menos de 16px faz o iOS dar zoom no foco; 40px: a linha maior cabe sem barra de rolagem */
+    #toast { inset: auto 8px max(8px, env(safe-area-inset-bottom)) 8px; max-width: none; }
   }
 </style>
 </head>
@@ -416,14 +416,14 @@
       <p class="dica" id="semConviteTexto"></p>
       <button type="button" class="link" id="tenhoLink">Tenho um link de convite</button>
       <label id="colarCampo" hidden>Cole aqui o link de convite
-        <input id="colarConvite" autocomplete="off" spellcheck="false" maxlength="2000" aria-describedby="colarErro"></label>
+        <input class="entrada" id="colarConvite" autocomplete="off" spellcheck="false" maxlength="2000" aria-describedby="colarErro"></label>
       <p class="error" id="colarErro" role="alert"></p>
     </div>
-    <label>Nome de usuário <input name="username" autocomplete="username" required minlength="2" maxlength="32" pattern="[a-zA-Z0-9_.]+" title="Letras, números, ponto e sublinhado"></label>
+    <label>Nome de usuário <input class="entrada" name="username" autocomplete="username" required minlength="2" maxlength="32" pattern="[a-zA-Z0-9_.]+" title="Letras, números, ponto e sublinhado"></label>
     <div class="campo">
       <label for="loginSenha">Senha</label>
       <div class="senha">
-        <input id="loginSenha" name="password" type="password" autocomplete="current-password" required maxlength="128" aria-describedby="capsAviso">
+        <input class="entrada" id="loginSenha" name="password" type="password" autocomplete="current-password" required maxlength="128" aria-describedby="capsAviso">
         <button type="button" class="olho" id="mostrarSenha" aria-pressed="false" aria-label="Mostrar senha" title="Mostrar senha">
           <svg class="ico olho-on" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12zM12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0"/></svg>
           <svg class="ico olho-off" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.9 4.2A9.1 9.1 0 0 1 12 4c6.5 0 10 8 10 8a17.6 17.6 0 0 1-2.2 3.2M6.6 6.6A17.4 17.4 0 0 0 2 12s3.5 8 10 8a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg>
@@ -435,9 +435,9 @@
       <li id="regraNome">Sem o seu nome de usuário</li>
       <li class="neutra">Nada óbvio, como 12345678 ou senha123</li>
     </ul>
-    <label id="confirmarCampo" hidden>Confirmar senha <input name="confirmar" type="password" autocomplete="new-password" maxlength="128" disabled></label>
+    <label id="confirmarCampo" hidden>Confirmar senha <input class="entrada" name="confirmar" type="password" autocomplete="new-password" maxlength="128" disabled></label>
     <p class="nota" id="capsAviso" role="status"></p>
-    <button class="principal" id="loginBotao">Entrar</button>
+    <button class="ok principal" id="loginBotao">Entrar</button>
     <div class="error" id="loginErro" role="alert"></div>
     <p class="troca"><span id="trocaTexto">Precisa de uma conta?</span> <button type="button" class="link" id="trocaModo">Registre-se</button></p>
     <button type="button" class="link" id="trocarServidor" hidden>Conectar a outro servidor…</button>
@@ -468,7 +468,7 @@
       <button class="ib so-estreito" id="abrirBusca" aria-label="Buscar mensagens" title="Buscar"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 11m-7 0a7 7 0 1 0 14 0a7 7 0 1 0-14 0M20 20l-3.5-3.5"/></svg></button>
       <button class="ib so-medio" id="abrirMembros" aria-label="Membros" title="Membros"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0-8 0M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></button>
     </header>
-    <div id="alertaHost" role="alert" hidden><span></span><button type="button">Ligar o Tailscale</button></div>
+    <div id="alertaHost" role="alert" hidden><span></span><button type="button" class="ok">Ligar o Tailscale</button></div>
     <section id="palco" hidden aria-label="Transmissão de tela">
       <div class="barra">
         <span class="ao-vivo">AO VIVO</span><b id="palcoNome"></b><span id="palcoInfo"></span>
@@ -494,7 +494,7 @@
 </div>
 <dialog id="pedir">
   <form method="dialog">
-    <label><span></span><textarea rows="2" required></textarea></label>
+    <label><span></span><textarea class="entrada" rows="2" required></textarea></label>
     <menu><button value="cancel" formnovalidate>Cancelar</button><button value="ok" class="ok">OK</button></menu>
   </form>
 </dialog>
@@ -504,7 +504,7 @@
     <ul class="servlista" id="servLista"></ul>
     <div class="campos">
       <label>Entrar no servidor de um amigo
-        <textarea id="servConvite" rows="3" placeholder="Cole aqui o link de convite que ele mandou (pode ser a mensagem inteira)."></textarea></label>
+        <textarea class="entrada" id="servConvite" rows="3" placeholder="Cole aqui o link de convite que ele mandou (pode ser a mensagem inteira)."></textarea></label>
     </div>
     <p class="error" id="servErro" role="status"></p>
     <menu><button type="button" id="servMais">Hospedar e mais opções…</button><button value="cancel" formnovalidate>Fechar</button><button type="button" class="ok" id="servEntrar">Entrar</button></menu>
@@ -514,7 +514,7 @@
   <form method="dialog">
     <h3 id="convidarTitulo">Convidar amigos</h3>
     <div class="campos">
-      <label>Link do convite <input type="text" id="convidarLink" readonly spellcheck="false"></label>
+      <label>Link do convite <input class="entrada" type="text" id="convidarLink" readonly spellcheck="false"></label>
       <p class="dica" id="convidarDica">Seu amigo abre o link: entra pelo navegador ou baixa o app.</p>
     </div>
     <p class="status" id="convidarStatus" role="status"></p>
@@ -527,7 +527,7 @@
     <div class="colunas">
     <div class="campos">
       <div class="campo-mic">
-        <label>Microfone <select name="entrada"></select></label>
+        <label>Microfone <select class="entrada" name="entrada"></select></label>
         <div class="teste-mic">
           <div class="medidor" id="micNivel" role="meter" aria-label="Nível do microfone" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-describedby="micDica"><span></span><i></i></div>
           <button type="button" id="micTestar">Testar microfone</button>
@@ -535,11 +535,11 @@
         <small class="dica" id="micDica" hidden>Fale normalmente: passando da marca, a barra fica verde e você aparece falando para os outros.</small>
         <small class="dica" id="micEmUso"></small>
       </div>
-      <label id="campoSaida">Saída de áudio <select name="saida"></select></label>
+      <label id="campoSaida">Saída de áudio <select class="entrada" name="saida"></select></label>
       <p class="dica" id="semNomes" hidden></p>
       <label><span class="rotulo"><span>Volume da chamada</span><span id="volGeralValor"></span></span>
         <input type="range" name="volumeGeral" min="0" max="1" step="0.05"></label>
-      <label>Qualidade da voz (envio) <select name="qualidadeVoz">
+      <label>Qualidade da voz (envio) <select class="entrada" name="qualidadeVoz">
         <option value="32">Econômica · 32 kbps</option>
         <option value="64">Padrão · 64 kbps</option>
         <option value="96">Alta · 96 kbps</option>
@@ -586,9 +586,9 @@
   <form id="senhaForm" class="campos">
     <h4>Alterar senha</h4>
     <input type="text" name="username" autocomplete="username" hidden>
-    <label>Senha atual <input type="password" name="atual" autocomplete="current-password" maxlength="128"></label>
-    <label>Nova senha <input type="password" name="nova" autocomplete="new-password" required minlength="8" maxlength="128" aria-describedby="novaDica contaCaps"></label>
-    <label>Confirmar nova senha <input type="password" name="confirmar" autocomplete="new-password" required maxlength="128"></label>
+    <label>Senha atual <input class="entrada" type="password" name="atual" autocomplete="current-password" maxlength="128"></label>
+    <label>Nova senha <input class="entrada" type="password" name="nova" autocomplete="new-password" required minlength="8" maxlength="128" aria-describedby="novaDica contaCaps"></label>
+    <label>Confirmar nova senha <input class="entrada" type="password" name="confirmar" autocomplete="new-password" required maxlength="128"></label>
     <p class="dica" id="novaDica">De 8 a 128 caracteres, sem o seu nome de usuário e nada óbvio como 12345678. Os outros dispositivos são desconectados.</p>
     <p class="nota" id="contaCaps" role="status"></p>
     <div class="acoes"><button class="ok" id="senhaBotao">Alterar senha</button></div>
@@ -598,8 +598,9 @@
     <h4 id="dispTitulo" tabindex="-1">Dispositivos conectados</h4>
     <p class="dica">Onde a sua conta está aberta. Não reconhece algum? Desconecte e troque a senha.</p>
     <ul class="servlista" id="dispositivos" aria-labelledby="dispTitulo"></ul>
+    <button type="button" id="sairOutros">Sair de todos os outros dispositivos</button>
     <p class="status" id="dispStatus" role="status"></p>
-    <menu><button type="button" id="sairOutros">Sair de todos os outros dispositivos</button><button value="ok" class="ok">Pronto</button></menu>
+    <menu><button type="button" id="sairConta">Sair da conta</button><button value="ok" class="ok">Pronto</button></menu>
   </form>
 </dialog>
 <dialog id="telaDlg" aria-labelledby="telaTitulo">
@@ -607,22 +608,29 @@
     <h3 id="telaTitulo">Compartilhar tela</h3>
     <div id="telaFontes"></div>
     <div class="opcoes">
-      <label>Resolução <select name="resolucao"></select></label>
-      <label>Taxa de quadros <select name="fps"></select></label>
-      <label>Otimizar para <select name="otimizar">
+      <label>Resolução <select class="entrada" name="resolucao"></select></label>
+      <label>Taxa de quadros <select class="entrada" name="fps"></select></label>
+      <label>Otimizar para <select class="entrada" name="otimizar">
         <option value="nitidez">Nitidez (texto, código)</option>
         <option value="movimento">Movimento (jogos, vídeo)</option>
       </select></label>
       <label id="telaAudioCampo"><input type="checkbox" name="audio"> Incluir o som do computador</label>
     </div>
     <details id="telaAvancado"><summary>Avançado</summary>
-      <label>Codec de vídeo <select name="codec"></select></label>
+      <label>Codec de vídeo <select class="entrada" name="codec"></select></label>
     </details>
     <p class="dica" id="telaEstimativa" role="status"></p>
     <p class="dica" id="telaDica"></p>
     <menu><button value="cancel" formnovalidate>Cancelar</button><button value="ok" class="ok" id="telaOk">Escolher no navegador…</button></menu>
   </form>
 </dialog>
+<dialog id="confirmar" aria-labelledby="confirmarTexto">
+  <form method="dialog">
+    <p id="confirmarTexto"></p>
+    <menu><button value="cancel" formnovalidate>Cancelar</button><button value="ok" class="perigo"></button></menu>
+  </form>
+</dialog>
+<div id="toast" popover="manual" role="alert"></div>
 <script type="module" src="app.js"></script>
 </body>
 </html>

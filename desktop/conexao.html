@@ -2,11 +2,11 @@
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'">
 <title>Servidor</title>
+<!-- a paleta do app: public/ vai junto no app empacotado -->
+<link rel="stylesheet" href="../public/tokens.css">
 <style>
-  /* mesma paleta do app (public/index.html): cinzas neutros e o limão, com texto escuro sobre ele */
-  :root { --bg0: #111214; --bg1: #17191b; --bg2: #1e2023; --bg3: #2a2d31; --bg4: #34383d; --linha: #2c2f33; --txt: #e8e9ea; --mut: #a4a9b0; --acc: #f2e558; --acc-tinta: #1d1b05; --ok: #3ecf7a; --warn: #f0b132; --err: #ff6166; color-scheme: dark; }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
   body { margin: 0; padding: 20px 22px; font: 14px/1.45 system-ui, sans-serif; background: var(--bg2); color: var(--txt); }

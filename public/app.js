@@ -163,7 +163,7 @@ handlers.push({ // VoiceStateStore
     somDeVoz(antes, data);
   },
   VOICE_SERVER_UPDATE: ({ data }) => voz.servidorPronto(data),
-  VOICE_STATE_ERROR: ({ data }) => { voz.resetar(); alert(data.message); },
+  VOICE_STATE_ERROR: ({ data }) => { voz.resetar(); avisarErro(data.message); },
 });
 
 // Sons de quem entra, sai ou transmite no MEU canal de voz. Só mudanças ao vivo: o READY já traz quem
@@ -233,7 +233,7 @@ async function enviar(content) {
 
 function reagir(m, emoji) {
   const eu = m.reactions.find((r) => r.emoji === emoji)?.me;
-  api(eu ? 'DELETE' : 'PUT', `/channels/${m.channel_id}/messages/${m.id}/reactions/${encodeURIComponent(emoji)}/@me`).catch(alert);
+  api(eu ? 'DELETE' : 'PUT', `/channels/${m.channel_id}/messages/${m.id}/reactions/${encodeURIComponent(emoji)}/@me`).catch(avisarErro);
 }
 
 // Lido = viu o canal com a aba visível. Debounce para não mandar um ack por mensagem.
@@ -312,7 +312,7 @@ const gateway = {
 // Sons da chamada: saem no mesmo alto-falante escolhido para a voz
 const sons = criarSons({ saida: () => voz.ajustes.prefs().saida });
 const voz = criarClienteVoz({
-  store, dispatch,
+  store, dispatch, avisarErro,
   enviarGateway: (p) => { if (gateway.ws?.readyState === 1) gateway.enviar(p); },
   sessionId: () => gateway.sessionId,
   tocar: sons.tocar,
@@ -330,7 +330,7 @@ function selecionarCanal(id) {
   store.replyTo = null;
   msgSel = null;
   grudarNoFim = true;
-  if (id && !store.messages.has(id)) carregarMensagens(id).catch(alert);
+  if (id && !store.messages.has(id)) carregarMensagens(id).catch(avisarErro);
   ackar();
   agendarRender();
 }
@@ -372,8 +372,8 @@ function h(tag, props = {}, ...filhos) {
   return el;
 }
 const trocar = (el, ...filhos) => el.replaceChildren(...nos(filhos));
-// Claridade 34%: letra branca fica legível em qualquer matiz (com 45%, amarelos e verdes davam ~2,5:1)
-const cor = (id) => `hsl(${Number(BigInt(id) % 360n)} 50% 34%)`;
+// Claridade 30%: letra branca fica acima de 4,5:1 em qualquer matiz (com 34%, os amarelos davam 4,06:1)
+const cor = (id) => `hsl(${Number(BigInt(id) % 360n)} 50% 30%)`;
 const nome = (id) => store.users.get(id)?.username ?? '?';
 const avatar = (id, letra) => h('span', { className: 'av', style: `background:${cor(id)}`, textContent: (letra ?? nome(id))[0].toUpperCase(), ariaHidden: 'true' });
 
@@ -390,7 +390,6 @@ const ICONES = {
   janela: 'M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM2 9h20',
   desligar: 'M10.7 13.3a16 16 0 0 0 3.4 2.6l1.3-1.3a2 2 0 0 1 2.1-.4 12.8 12.8 0 0 0 2.8.7 2 2 0 0 1 1.7 2v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.4 19.4 0 0 1-3.3-2.7m-2.7-3.3a19.8 19.8 0 0 1-3.1-8.6A2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7 12.8 12.8 0 0 0 .7 2.8 2 2 0 0 1-.4 2.1L8.1 9.9M22 2 2 22',
   mais: 'M12 5v14M5 12h14',
-  sair: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9',
   servidor: 'M4 2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zM4 14h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2zM6 6h.01M6 18h.01',
   x: 'M18 6 6 18M6 6l12 12',
   responder: 'M9 17l-5-5 5-5M20 18v-2a4 4 0 0 0-4-4H4',
@@ -440,6 +439,26 @@ function pedirTexto(titulo, inicial = '', max = 100) {
   return new Promise((ok) => d.addEventListener('close', () => ok(d.returnValue === 'ok' ? campo.value.trim() || null : null), { once: true }));
 }
 
+// confirm() também não: mesmo diálogo, com o botão do perigo nomeando a ação. Cancelar recebe o foco ao abrir.
+function confirmar(texto, acao) {
+  const d = $('#confirmar');
+  $('#confirmarTexto').textContent = texto;
+  d.querySelector('.perigo').textContent = acao;
+  d.returnValue = '';
+  d.showModal();
+  return new Promise((ok) => d.addEventListener('close', () => ok(d.returnValue === 'ok'), { once: true }));
+}
+// Erro de uma ação (no lugar do alert(), que trava a página): aviso no canto, some sozinho
+let timerToast = 0;
+function avisarErro(e) {
+  const t = $('#toast');
+  t.textContent = e?.message ?? String(e);
+  if (t.matches(':popover-open')) t.hidePopover();
+  t.showPopover(); // de novo: fica acima de um diálogo aberto depois do erro anterior
+  clearTimeout(timerToast);
+  timerToast = setTimeout(() => t.hidePopover(), 6000);
+}
+
 // Menção com a janela em segundo plano vira notificação do sistema (toast no Windows, no app desktop)
 function notificar(m) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
@@ -455,12 +474,12 @@ function agendarRender() {
   setTimeout(fazer, 150); // janela minimizada não tem rAF, mas o título (menções na barra de tarefas) precisa mudar
 }
 
-// Sair e trocar de servidor: sempre visíveis, até antes de conectar (senão uma falha deixa a janela sem saída)
+// Conta e trocar de servidor: sempre visíveis, até antes de conectar (senão uma falha deixa a janela sem saída).
+// Sair da conta fica dentro de "Minha conta": ao lado dos ajustes, um clique errado derrubava a conta e a chamada.
 const botoesConta = () => [
   botaoIcone('ajustes', 'Voz e áudio', { onclick: abrirAjustesAudio }),
   botaoIcone('conta', 'Minha conta', { onclick: abrirConta }),
   ponte()?.abrirConexao && botaoIcone('servidor', 'Trocar de servidor', { onclick: abrirServidores }),
-  botaoIcone('sair', 'Sair da conta', { onclick: sair }),
 ];
 const statusConexao = () => (store.conn === 'conectado' ? 'online' : store.conn);
 function painelMe() {
@@ -906,7 +925,7 @@ async function escolherTela() {
       if (fonteId && !(await nativo.escolherFonte(fonteId, opcoes.comAudio))) throw new Error('fonte não está mais disponível');
       await voz.compartilharTela(opcoes);
     } catch (e) {
-      if (e.name !== 'NotAllowedError') alert(`Não foi possível compartilhar: ${e.message}`); // NotAllowed = cancelou
+      if (e.name !== 'NotAllowedError') avisarErro(`Não foi possível compartilhar: ${e.message}`); // NotAllowed = cancelou
     }
   };
   if (nativo) {
@@ -951,10 +970,10 @@ function renderMensagem(m, ant) {
       h('button', { type: 'button', title: 'Responder', ariaLabel: 'Responder', onclick: () => { msgSel = null; dispatch({ type: 'REPLY_SET', message: m }); $('#input').focus(); } }, icone('responder', 18)),
       meu && h('button', { type: 'button', title: 'Editar', ariaLabel: 'Editar', onclick: async () => {
         const c = await pedirTexto('Editar mensagem', m.content, 2000);
-        if (c && c !== m.content) api('PATCH', `/channels/${m.channel_id}/messages/${m.id}`, { content: c }).catch(alert);
+        if (c && c !== m.content) api('PATCH', `/channels/${m.channel_id}/messages/${m.id}`, { content: c }).catch(avisarErro);
       } }, icone('editar', 18)),
-      meu && h('button', { type: 'button', className: 'perigo', title: 'Apagar', ariaLabel: 'Apagar', onclick: () => {
-        if (confirm('Apagar esta mensagem?')) api('DELETE', `/channels/${m.channel_id}/messages/${m.id}`).catch(alert);
+      meu && h('button', { type: 'button', className: 'perigo', title: 'Apagar', ariaLabel: 'Apagar', onclick: async () => {
+        if (await confirmar('Apagar esta mensagem? Não dá para desfazer.', 'Apagar')) api('DELETE', `/channels/${m.channel_id}/messages/${m.id}`).catch(avisarErro);
       } }, icone('apagar', 18)),
     ),
   );
@@ -1014,7 +1033,7 @@ function renderBusca() {
       h('small', { textContent: `#${canalNome(m.channel_id)} · ${m.author.username} · ${hora(m.id)}` }),
       h('div', {}, markdown(m.content)),
     ))),
-    s.messages.length < n && h('button', { className: 'mais', textContent: 'Mais resultados', onclick: () => buscar(s.q, s.messages.length).catch(alert) }),
+    s.messages.length < n && h('button', { className: 'mais', textContent: 'Mais resultados', onclick: () => buscar(s.q, s.messages.length).catch(avisarErro) }),
   ];
 }
 setInterval(() => { if (store.typing.size) renderTyping(); }, 1000);
@@ -1059,7 +1078,7 @@ $('#search').addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { fecharBusca(); e.target.blur(); return; }
   if (e.key !== 'Enter') return;
   const q = e.target.value.trim();
-  q ? (e.target.blur(), buscar(q).catch(alert)) : fecharBusca();
+  q ? (e.target.blur(), buscar(q).catch(avisarErro)) : fecharBusca();
 });
 // celular: a busca abre por cima do cabeçalho e fecha ao sair do campo vazio
 $('#abrirBusca').addEventListener('click', () => { document.body.classList.add('busca-aberta'); $('#search').focus(); });
@@ -1127,9 +1146,10 @@ async function desconectar(botao, id) {
     statusEm('#dispStatus', 'Dispositivo desconectado.', 'ok');
   } catch (e) { botao.disabled = false; statusEm('#dispStatus', e.message, 'erro'); }
 }
+$('#sairConta').addEventListener('click', sair);
 $('#sairOutros').addEventListener('click', async (e) => {
   const botao = e.currentTarget;
-  if (!confirm('Desconectar todos os outros dispositivos? Eles vão precisar entrar de novo.')) return;
+  if (!(await confirmar('Desconectar todos os outros dispositivos? Eles vão precisar entrar de novo.', 'Desconectar'))) return;
   botao.disabled = true;
   try {
     await api('POST', '/users/@me/sessions/encerrar-outras');

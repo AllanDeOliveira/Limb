@@ -1,0 +1,12 @@
+/* Paleta do Limb, usada pelo app (index.html), pela página de convite e pela janela Servidor do desktop.
+   Cinzas neutros e o limão (#f2e558). O limão é claro: texto em cima dele é sempre escuro (--acc-tinta).
+   Contraste (WCAG): --fraco ≥ 4.5 até o --bg3; branco sobre --perigo 4.6. --err é para texto e bolinhas; fundo
+   vermelho com texto branco usa --perigo. */
+:root {
+  --bg0: #111214; --bg1: #17191b; --bg2: #1e2023; --bg3: #2a2d31; --bg4: #34383d; --linha: #2c2f33;
+  --txt: #e8e9ea; --txt-forte: #fff; --mut: #a4a9b0; --fraco: #8e949c;
+  --acc: #f2e558; --acc-tinta: #1d1b05; --acc-suave: rgba(242, 229, 88, .14); --acc-texto: #f5ec86;
+  --ok: #3ecf7a; --warn: #f0b132; --err: #ff6166; --perigo: #d63a40; --link: #7cc4ff;
+  --raio: 10px;
+  color-scheme: dark;
+}
