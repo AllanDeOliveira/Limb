@@ -76,7 +76,9 @@ export function criarVoz({ broadcast, paraSessao, canalDeVoz, iceServers = [] })
     if (anterior?.channel_id !== channelId || anterior?.session_id !== sessao.id) {
       tirarDaSala(userId, 4014);
       const token = randomBytes(16).toString('hex');
-      tokens.set(token, { user_id: userId, guild_id: estado.guild_id, channel_id: channelId, session_id: sessao.id, expira: Date.now() + TOKEN_TTL });
+      const agora = Date.now();
+      for (const [k, v] of tokens) if (v.expira < agora) tokens.delete(k); // os nunca usados (aba fechou antes) não ficam para sempre
+      tokens.set(token, { user_id: userId, guild_id: estado.guild_id, channel_id: channelId, session_id: sessao.id, expira: agora + TOKEN_TTL });
       paraSessao(sessao, 'VOICE_SERVER_UPDATE', { token, guild_id: estado.guild_id, channel_id: channelId, endpoint: '/voice' });
     }
     return null;
@@ -89,9 +91,13 @@ export function criarVoz({ broadcast, paraSessao, canalDeVoz, iceServers = [] })
   }
 
   function gatewayVoz(ws) {
+    ws.on('error', () => {}); // frame grande demais / UTF-8 inválido: o ws fecha sozinho; sem ouvinte, o servidor caía
     let eu = null, entrando = false, timer;
     const vigiar = () => { clearTimeout(timer); timer = setTimeout(() => ws.close(4009, 'Session timed out'), HEARTBEAT * 1.5); };
     vigiar();
+    // o token vale 30 s: quem não se identifica nesse tempo não vai entrar
+    const semLogin = setTimeout(() => { if (!eu && !entrando) ws.close(4003, 'Not authenticated'); }, TOKEN_TTL);
+    ws.on('close', () => clearTimeout(semLogin));
     enviar(ws, VOP.HELLO, { heartbeat_interval: HEARTBEAT, v: 8 });
 
     // o token só vale enquanto a pessoa continua naquele canal, por aquela sessão (outra aba não "rouba" a vaga)
@@ -113,9 +119,13 @@ export function criarVoz({ broadcast, paraSessao, canalDeVoz, iceServers = [] })
     }
 
     ws.on('message', (raw) => {
+      try { receber(raw); } catch (e) { console.error('[voz]', e); ws.close(4000, 'Erro'); } // nunca derruba o servidor
+    });
+    function receber(raw) {
       let p;
       try { p = JSON.parse(raw); } catch { return ws.close(4002, 'Decode error'); }
-      const d = p.d ?? {};
+      if (!p || typeof p !== 'object' || Array.isArray(p)) return ws.close(4002, 'Decode error'); // "null", "1", "[]"…
+      const d = p.d && typeof p.d === 'object' ? p.d : {};
       if (p.op === VOP.HEARTBEAT) { vigiar(); return enviar(ws, VOP.HEARTBEAT_ACK, { t: d.t }); }
 
       if (!eu) {
@@ -170,7 +180,7 @@ export function criarVoz({ broadcast, paraSessao, canalDeVoz, iceServers = [] })
         if (d.candidate && typeof d.candidate === 'object') sinal.candidate = d.candidate;
         return enviar(alvo.ws, VOP.PEER_SIGNAL, sinal);
       }
-    });
+    }
 
     ws.on('close', () => {
       clearTimeout(timer);

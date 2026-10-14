@@ -171,7 +171,7 @@ const voz = criarVoz({
   broadcast,
   iceServers: iceAtual, // a cada READY: as credenciais do TURN vencem
   paraSessao: dispatch,
-  canalDeVoz: (id) => /^\d{1,20}$/.test(id) && q('SELECT * FROM channels WHERE id = ? AND type = ?').get(BigInt(id), CANAL.VOZ),
+  canalDeVoz: (id) => idValido(id) && q('SELECT * FROM channels WHERE id = ? AND type = ?').get(BigInt(id), CANAL.VOZ),
 });
 
 function encerrar(s) {
@@ -195,16 +195,26 @@ function readyPayload(s) {
 }
 
 function gateway(ws, req) {
+  // Frame grande demais ou UTF-8 inválido: o ws emite 'error' no socket (e já fecha com o código certo).
+  // Sem ouvinte, o 'error' derrubava o servidor de todo mundo.
+  ws.on('error', () => {});
   ws.etf = new URL(req.url, 'http://x').searchParams.get('encoding') === 'etf';
   let s = null, timer;
   // Cliente que não manda heartbeat no prazo é zumbi: fecha (código 4009 = session timed out)
   const vigiar = () => { clearTimeout(timer); timer = setTimeout(() => ws.close(4009, 'Session timed out'), HEARTBEAT_INTERVAL * 1.5); };
   vigiar();
+  // Quem não se identifica em 30 s não é o app: fecha, em vez de ocupar um socket para sempre só com heartbeats
+  const semLogin = setTimeout(() => { if (!s) ws.close(4003, 'Not authenticated'); }, 30_000);
+  ws.on('close', () => clearTimeout(semLogin));
   send({ ws }, { op: OP.HELLO, d: { heartbeat_interval: HEARTBEAT_INTERVAL } });
 
   ws.on('message', (raw) => {
+    try { receber(raw); } catch (e) { console.error('[gateway]', e); ws.close(4000, 'Erro'); } // nunca derruba o servidor
+  });
+  function receber(raw) {
     let p;
     try { p = ws.etf ? unpack(raw) : JSON.parse(raw); } catch { return ws.close(4002, 'Decode error'); }
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return ws.close(4002, 'Decode error'); // "null", "1", "[]"…
     if (p.op === OP.HEARTBEAT) { vigiar(); return send({ ws }, { op: OP.HEARTBEAT_ACK }); }
     if (s) {
       if (s.ws !== ws) return; // sessão revogada (ou retomada noutro socket): este já está fechando
@@ -245,7 +255,7 @@ function gateway(ws, req) {
       return;
     }
     ws.close(4003, 'Not authenticated');
-  });
+  }
 
   ws.on('close', (code) => {
     clearTimeout(timer);
@@ -260,7 +270,10 @@ function gateway(ws, req) {
 // ── REST ────────────────────────────────────────────────────────────────────
 const json = (v) => JSON.stringify(v, (_, x) => (typeof x === 'bigint' ? String(x) : x));
 class HttpError extends Error { constructor(status, msg, extra) { super(msg); this.status = status; this.extra = extra; } }
-const id64 = (v) => { if (!/^\d{1,20}$/.test(v ?? '')) throw new HttpError(400, 'id inválido'); return BigInt(v); };
+// Snowflake cabe em 64 bits com sinal: "99999999999999999999" passa no /\d{1,20}/, mas o SQLite recusa o BigInt
+// (e no gateway a exceção derrubava o servidor)
+function idValido(v) { return typeof v === 'string' && /^\d{1,19}$/.test(v) && BigInt(v) <= 2n ** 63n - 1n; }
+const id64 = (v) => { if (!idValido(v ?? '')) throw new HttpError(400, 'id inválido'); return BigInt(v); };
 const conteudo = (v) => {
   const c = String(v ?? '').trim();
   if (!c || c.length > 2000) throw new HttpError(400, 'Mensagem precisa ter de 1 a 2000 caracteres');
@@ -776,9 +789,13 @@ const rotas = [
   }],
 ];
 
+// Junta os bytes e decodifica uma vez só: somando pedaço a pedaço, um acento ou emoji cortado entre dois pedaços
+// (o Funnel entrega em vários) virava "��" na mensagem de todo mundo
 async function lerCorpo(req) {
-  let s = '';
-  for await (const chunk of req) { s += chunk; if (s.length > 64_000) throw new HttpError(413, 'Corpo grande demais'); }
+  const partes = [];
+  let n = 0;
+  for await (const chunk of req) { n += chunk.length; if (n > 64_000) throw new HttpError(413, 'Corpo grande demais'); partes.push(chunk); }
+  const s = Buffer.concat(partes).toString('utf8');
   try { return s ? JSON.parse(s) : {}; } catch { throw new HttpError(400, 'JSON inválido'); }
 }
 
@@ -849,11 +866,15 @@ async function paginaConvite(bruto, req, res) {
   }).end(corpo);
 }
 
+// Nenhuma falha de um pedido pode derrubar o servidor de todos (a rejeição de um handler async mata o processo)
+const falhaPedido = (res) => (e) => { console.error(e); if (!res.headersSent) res.writeHead(500).end(); else res.destroy(); };
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://localhost');
+  let url;
+  // "GET //" ou "//:99999": new URL lança exceção, e sem isto o servidor caía
+  try { url = new URL(req.url, 'http://localhost'); } catch { return res.writeHead(400).end(); }
   const convite = /^\/convite(?:\/([^/]+))?\/?$/.exec(url.pathname);
-  if (convite && ['GET', 'HEAD'].includes(req.method)) return paginaConvite(convite[1], req, res);
-  if (!url.pathname.startsWith('/api/')) return estatico(url, res);
+  if (convite && ['GET', 'HEAD'].includes(req.method)) return paginaConvite(convite[1], req, res).catch(falhaPedido(res));
+  if (!url.pathname.startsWith('/api/')) return estatico(url, res).catch(falhaPedido(res));
   try {
     const rota = rotas.find(([m, re]) => m === req.method && re.test(url.pathname));
     if (!rota) throw new HttpError(404, 'Rota não encontrada');
@@ -878,10 +899,16 @@ const server = http.createServer(async (req, res) => {
 const wsPrincipal = new WebSocketServer({ noServer: true, maxPayload: 4096 }).on('connection', gateway);
 const wsVoz = new WebSocketServer({ noServer: true, maxPayload: 65_536 }).on('connection', voz.gatewayVoz); // SDP é maior
 server.on('upgrade', (req, socket, head) => {
-  const alvo = { '/gateway': wsPrincipal, '/voice': wsVoz }[new URL(req.url, 'http://x').pathname];
+  let caminho;
+  try { caminho = new URL(req.url, 'http://x').pathname; } catch { return socket.destroy(); }
+  const alvo = { '/gateway': wsPrincipal, '/voice': wsVoz }[caminho];
   if (!alvo) return socket.destroy();
   alvo.handleUpgrade(req, socket, head, (ws) => alvo.emit('connection', ws, req));
 });
+// Última rede de proteção: com o servidor na internet, um erro que escape (bug ainda não visto) fica no log
+// em vez de derrubar a conversa de todos
+process.on('uncaughtException', (e) => console.error('[erro não tratado]', e));
+process.on('unhandledRejection', (e) => console.error('[promessa rejeitada]', e));
 // HOST=127.0.0.1 deixa só esta máquina entrar (padrão do app desktop); sem HOST, aceita a rede local
 server.listen(PORT, process.env.HOST || undefined, () => {
   console.log(`Limb em http://localhost:${server.address().port}`);

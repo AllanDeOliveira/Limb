@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
+import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -663,4 +665,67 @@ test('TURN da Cloudflare fora do ar: a voz segue com a lista fixa, sem registrar
     assert.match(p.log, /TURN da Cloudflare indisponível \(HTTP 500\)/);
     assert.ok(!p.log.includes('token-secreto'));
   } finally { cf.srv.close(); }
+});
+
+// Ataques que derrubavam o servidor de todos (achados da auditoria). Depois de cada um, ele precisa seguir de pé.
+test('mensagens malformadas, frames inválidos, caminho "//" e id gigante não derrubam o servidor', async () => {
+  const S = await subir();
+  const p = outros.at(-1);
+  const ws = S.replace('http', 'ws');
+  const fechouCom = (caminho, mandar) => new Promise((res) => {
+    const w = new WebSocket(ws + caminho);
+    w.onopen = () => mandar(w);
+    w.onclose = (e) => res(e.code);
+    w.onerror = () => {};
+  });
+  // conexão crua: handshake na mão e depois bytes quaisquer (o WebSocket do Node não manda UTF-8 inválido)
+  const cru = (pedido, depois) => new Promise((res) => {
+    const s = net.connect(Number(new URL(S).port), '127.0.0.1', () => s.write(pedido));
+    let resposta = '';
+    s.on('data', (d) => { resposta += d; if (depois && resposta.includes(' 101 ')) { s.write(depois); depois = null; } });
+    s.on('close', () => res(resposta));
+    s.on('error', () => res(resposta));
+    setTimeout(() => { s.destroy(); res(resposta); }, 2000);
+  });
+  const upgrade = (caminho) => `GET ${caminho} HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n`
+    + `Sec-WebSocket-Key: ${randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`;
+
+  assert.equal(await fechouCom('/gateway', (w) => w.send('null')), 4002);
+  assert.equal(await fechouCom('/voice', (w) => w.send('null')), 4002);
+  assert.equal(await fechouCom('/gateway', (w) => w.send('[1]')), 4002);
+  assert.equal(await fechouCom('/gateway', (w) => w.send('x'.repeat(5000))), 1009); // maior que o maxPayload
+  await cru(upgrade('/gateway'), Buffer.from([0x81, 0x82, 0, 0, 0, 0, 0xff, 0xfe])); // texto com UTF-8 inválido
+  assert.match(await cru('GET // HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'), /^HTTP\/1\.1 400/);
+  await cru(upgrade('//:99999'));
+  // logado: um channel_id que não cabe em 64 bits
+  const [, conta] = await api('POST', '/register', { username: 'testador', password: 'pudim-de-leite-9' }, null, S);
+  const codigo = await new Promise((res) => {
+    const w = new WebSocket(ws + '/gateway');
+    w.onmessage = (e) => {
+      const m = JSON.parse(e.data);
+      if (m.op === 10) w.send(JSON.stringify({ op: 2, d: { token: conta.token } }));
+      if (m.t === 'READY') w.send(JSON.stringify({ op: 4, d: { guild_id: '1', channel_id: '99999999999999999999' } }));
+      if (m.t === 'VOICE_STATE_ERROR') { w.close(1000); res('erro de voz'); }
+    };
+    w.onclose = () => res('fechou');
+  });
+  assert.equal(codigo, 'erro de voz');
+  assert.equal((await api('GET', '/channels/99999999999999999999/messages', null, conta.token, S))[0], 400);
+  // acento cortado entre dois pedaços do corpo: chega inteiro
+  const corpo = Buffer.from(JSON.stringify({ username: 'quebrado', password: 'pão-de-queijo-1' }));
+  const meio = corpo.indexOf(Buffer.from('ã')) + 1; // no meio dos dois bytes do "ã"
+  const partido = await new Promise((res) => {
+    const s = net.connect(Number(new URL(S).port), '127.0.0.1', () => {
+      s.write(`POST /api/register HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${corpo.length}\r\nConnection: close\r\n\r\n`);
+      s.write(corpo.subarray(0, meio));
+      setTimeout(() => s.write(corpo.subarray(meio)), 50);
+    });
+    let r = ''; s.on('data', (d) => { r += d; }); s.on('close', () => res(r));
+  });
+  assert.match(partido, /HTTP\/1\.1 200/);
+  // a senha com "ã" foi gravada inteira: o login com ela funciona (com "��" no lugar, daria 401)
+  assert.equal((await api('POST', '/login', { username: 'quebrado', password: 'pão-de-queijo-1' }, null, S))[0], 200);
+
+  assert.equal(p.exitCode, null, `o servidor caiu:\n${p.log}`);
+  assert.equal((await api('GET', '/info', null, null, S))[0], 200);
 });
