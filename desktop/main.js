@@ -78,11 +78,21 @@ const salvarConfig = () => writeFileSync(arqConfig, JSON.stringify(config, null,
 // Reinicia sem o --oculto (quem pediu a troca está olhando para a tela) e sem o limb:// que abriu o app
 // (senão o convite seria perguntado de novo a cada reinício)
 // O `funnel` esperando autorização morre junto (no Windows sobreviveria ao app); ao abrir, o app confere de novo.
-const reiniciar = () => {
+// "Fecha e não reinicia": a nova instância abria com a trava de instância única ainda presa por esta, achava
+// que era a segunda e saía. Por isso solta a trava antes, e espera o servidor embutido largar a porta (no
+// máximo 3 s), senão a nova instância pode subir antes e dar "porta em uso".
+// ponytail: ainda reinicia o app inteiro; aplicar sem reiniciar fica para a 1.8.1
+let reiniciando = false;
+async function reiniciar() {
+  if (reiniciando) return;
+  reiniciando = true;
   tailscale.cancelarEspera();
+  const proc = servidor;
+  if (proc?.pid) await new Promise((ok) => { proc.once('exit', ok); setTimeout(ok, 3000); proc.kill(); });
+  app.releaseSingleInstanceLock();
   app.relaunch({ args: process.argv.slice(1).filter((a) => a !== '--oculto' && !/^limb:/i.test(a)) });
   app.exit(0);
-};
+}
 
 // Histórico: o mesmo endereço sobe para o topo; guarda os 8 mais recentes
 function lembrarServidor({ url, codigo = '', nome }) {
@@ -161,18 +171,35 @@ async function estadoFunnel(porta = config.porta) {
 // Abriu hospedando pela internet: confere e liga se precisar, sem segurar a janela. Não abre o navegador
 // sozinho (pode ser o "Iniciar com o Windows"); se faltar autorizar, a faixa da janela principal avisa.
 // Enquanto isso, a faixa e o "Convidar amigos" esperam (senão piscariam "desligado" ao abrir).
-let garantindo = null;
-function garantirFunnel() {
-  garantindo = (async () => {
-    if ((await estadoFunnel()).publicado) return;
+// "Iniciar com o Windows" costuma abrir antes de o Tailscale ficar Running (e sair pela bandeja tira o Funnel do
+// ar): sem conseguir, tenta de novo, cada vez mais devagar (15 s, 30 s… até 5 min). Cada tentativa é curta, porque
+// a faixa e o "Convidar amigos" esperam por ela.
+let garantindo = null, novaTentativa = null;
+function garantirFunnel(espera = 15_000) {
+  clearTimeout(novaTentativa);
+  const tentativa = (async () => {
+    if (saindo || (await estadoFunnel()).publicado) return true;
     const r = await tailscale.ligarFunnel(config.porta, (url) => registrar('o Funnel precisa de autorização:', url));
     if (r.erro) registrar('o Funnel não ligou:', r.erro);
-  })().catch((e) => registrar('Funnel:', e)).finally(() => { garantindo = null; });
+    return !r.erro; // ok, ou esperando autorização: o `funnel --bg` termina sozinho quando o dono autorizar
+  })().catch((e) => { registrar('Funnel:', e); return false; });
+  garantindo = tentativa.finally(() => { garantindo = null; });
+  tentativa.then((ok) => {
+    if (!ok && !saindo) novaTentativa = setTimeout(() => garantirFunnel(Math.min(espera * 2, 5 * 60_000)), espera);
+  });
 }
-// Deixou de hospedar pela internet: tira este computador da internet. Só desliga o Funnel que aponta
-// para a porta deste servidor (não o de outro programa). Melhor esforço: no máximo 6 s, depois segue.
+// Portas que o "Ativar" da janela Servidor publicou e ainda não foram salvas (a que o app já publica não conta).
+// Fechar a janela sem salvar tira essas do ar: o `funnel --bg` fica gravado no Tailscale e sobreviveria ao app.
+const funnelsDaJanela = new Set();
+// Deixou de hospedar pela internet: tira este computador da internet. Só desliga o Funnel que o Limb ligou e
+// que aponta para a porta deste servidor (não o de outro programa: quem só entra no servidor de um amigo e
+// nunca publicou não tem Funnel do Limb). Melhor esforço: no máximo 6 s, depois segue.
 function despublicar(...portas) {
-  if (!portas.length) portas.push(config.porta);
+  if (!portas.length && publicando) portas.push(config.porta);
+  portas.push(...funnelsDaJanela);
+  funnelsDaJanela.clear();
+  clearTimeout(novaTentativa); // uma nova tentativa pendente religaria tudo depois que saímos
+  if (!portas.length) return Promise.resolve();
   tailscale.cancelarEspera(); // um `funnel` esperando autorização ligaria tudo depois que saímos
   const tentar = async () => {
     const f = await tailscale.funnelStatus();
@@ -181,6 +208,16 @@ function despublicar(...portas) {
     if (r.erro) registrar('o Funnel não desligou:', r.erro);
   };
   return Promise.race([tentar().catch((e) => registrar('Funnel:', e)), new Promise((ok) => setTimeout(ok, 6000))]);
+}
+// A janela Servidor fechou (ou trocou de servidor) sem salvar depois de um "Ativar": não deixa uma porta
+// publicada na internet sem o Limb saber. Se ela tinha tirado do ar o que está salvo, põe de volta.
+// Fica guardado: se a janela era a última, o app sai logo em seguida e precisa esperar isto terminar.
+let largando = null;
+function largarFunnelsDaJanela() {
+  if (!funnelsDaJanela.size) return largando ?? Promise.resolve();
+  const p = largando = despublicar(...funnelsDaJanela).then(() => { if (publicando && !saindo) garantirFunnel(); });
+  p.finally(() => { if (largando === p) largando = null; });
+  return p;
 }
 
 function criarJanela(endpoint) {
@@ -404,11 +441,14 @@ function abrirConexao(erro = null) {
   setTimeout(() => { if (!win.isDestroyed() && !win.isVisible()) { registrar('[servidor] ainda não pronta em 8 s; mostrando assim mesmo'); win.show(); } }, 8000);
   win.on('closed', () => {
     if (janelaConexao === win) janelaConexao = null;
-    if (!janela) app.quit(); // aberta sozinha (o app não conseguiu iniciar) e fechada sem salvar
+    // Cancelou depois de "Ativar": a porta publicada por ela sai da internet (salvou: o reinício cuida)
+    const tirar = conexaoSalva ? Promise.resolve() : largarFunnelsDaJanela();
+    if (!janela) tirar.finally(() => app.quit()); // aberta sozinha (o app não conseguiu iniciar) e fechada sem salvar
   });
   win.loadFile(path.join(raiz, 'desktop', 'conexao.html'));
 }
 const daConexao = (e) => janelaConexao && e.sender === janelaConexao.webContents;
+let conexaoSalva = false; // "Salvar e reiniciar" deu certo: o que a janela publicou passa a ser o salvo
 ipcMain.handle('conexao:ler', async (e) => {
   if (!daConexao(e)) return null;
   const ips = Object.entries(networkInterfaces()).flatMap(([nome, lista]) => (lista ?? [])
@@ -426,13 +466,15 @@ ipcMain.handle('conexao:ler', async (e) => {
 });
 // Histórico: trocar com um clique (url null = este computador), esquecer, e o "Iniciar com o Windows"
 async function trocarPara(url) {
-  if (url == null) { config.endpoint = null; config.conviteRecebido = ''; }
-  else {
+  if (url == null) {
+    config.endpoint = null; config.conviteRecebido = '';
+    await largarFunnelsDaJanela(); // volta a hospedar com o que está salvo, não com um "Ativar" sem salvar
+  } else {
     const h = config.historico.find((x) => x.url === url);
     if (!h) return { erro: 'Esse servidor não está no histórico.' };
     lembrarServidor(h);
     Object.assign(config, { endpoint: h.url, conviteRecebido: h.codigo });
-    await despublicar(); // vai para o servidor de outro: este computador sai da internet
+    await despublicar(); // vai para o servidor de outro: este computador sai da internet (se o Limb publicou)
   }
   salvarConfig();
   reiniciar();
@@ -443,9 +485,24 @@ async function trocarPara(url) {
 // Endereço novo sempre passa por uma confirmação nativa: nem um servidor nem um link conseguem mandar
 // você para outro lugar sem você ver.
 let confirmando = false;
+// Mesmo servidor, link novo ("Gerar link novo" de quem hospeda): só troca o convite escondido, sem perguntar
+// (o servidor é o mesmo) e sem reiniciar. Senão o link antigo voltaria a cada abertura no #convite=.
+function trocarConviteRecebido(lido) {
+  if (!lido.codigo || lido.codigo === config.conviteRecebido) return { erro: 'Você já está nesse servidor.' };
+  config.conviteRecebido = lido.codigo;
+  lembrarServidor({ url: lido.url, codigo: lido.codigo });
+  salvarConfig();
+  if (janela && !janela.isDestroyed()) {
+    const wc = janela.webContents;
+    // a página tira o #convite do endereço ao ler: mudar só o # não recarrega a página, então recarrega depois
+    wc.once('did-navigate-in-page', () => wc.reload());
+    wc.loadURL(`${config.endpoint}/#convite=${encodeURIComponent(lido.codigo)}`);
+  }
+  return {};
+}
 async function entrarNoServidor(lido, pai) {
   if (confirmando) return { erro: 'Já tem um convite esperando resposta.' };
-  if (lido.url === config.endpoint) return { erro: 'Você já está nesse servidor.' };
+  if (lido.url === config.endpoint) return trocarConviteRecebido(lido);
   confirmando = true;
   try {
     if (!endpointExterno && await ehEsteComputador(lido.url)) return { erro: 'Esse convite é do seu próprio servidor: você já está nele.' };
@@ -490,7 +547,7 @@ async function tratarLink() {
   const lido = lerDeepLink(texto);
   if (!lido) { registrar('link limb:// ignorado:', texto.slice(0, 300)); return ajudar(); }
   mostrarJanela(); // a pergunta precisa aparecer na frente, mesmo com o app escondido na bandeja
-  if (lido.url === config.endpoint) return; // já está nele
+  if (lido.url === config.endpoint) { trocarConviteRecebido(lido); return; } // já está nele: no máximo, um convite novo
   const pai = janela ?? janelaConexao;
   const r = await entrarNoServidor(lido, pai);
   if (r.erro) {
@@ -546,6 +603,8 @@ ipcMain.handle('conexao:funnelLigar', (e, porta) => {
   if (!daConexao(e)) return null;
   const p = Math.trunc(Number(porta));
   if (!portaValida(p)) return { erro: 'Porta precisa estar entre 1024 e 65535.' };
+  // fora do que está salvo (não publicava, ou outra porta): vale só se salvar; fechar sem salvar tira do ar
+  if (!(publicando && p === config.porta)) funnelsDaJanela.add(p);
   return tailscale.ligarFunnel(p, abrirNoNavegador);
 });
 const NAO_RESPONDEU = 'O servidor não respondeu: o computador do seu amigo pode estar desligado ou com o Limb fechado.';
@@ -591,7 +650,8 @@ ipcMain.handle('conexao:salvar', async (e, novo) => {
     const internet = !!novo.internet;
     // O código do convite nunca vem da página: ela já pediu um (conexao:novoConvite) ao escolher "Hospedar".
     // Sem nenhum, gera aqui. Pela internet qualquer pessoa chega na tela de criar conta e o código é a tranca:
-    // um curto, escolhido à mão antes da 1.8, dá lugar a um novo (o link muda de qualquer jeito, de 100.x para .ts.net)
+    // um curto, escolhido à mão antes da 1.8, dá lugar a um novo. A janela já troca ao escolher "Pela internet", antes
+    // de mostrar o link; isto é só a rede de segurança (se a troca da janela falhou, ainda não havia link para copiar)
     if (!config.codigoConvite || (internet && config.codigoConvite.length < 6)) hospedagem.codigoConvite = gerarCodigo();
     const keyId = limpar(novo.turnKeyId, 200), tokenNovo = limpar(novo.turnToken, 1000);
     const turn = novo.turnRemover ? { keyId: '', token: '' } : { keyId, token: tokenNovo || config.turnCloudflare.token };
@@ -608,9 +668,10 @@ ipcMain.handle('conexao:salvar', async (e, novo) => {
   });
   if (endpoint) lembrarServidor({ url: endpoint, codigo: config.conviteRecebido, nome: (await testarServidor(endpoint)).nome || await nomeNoTailscale(endpoint) });
   salvarConfig();
-  // Foi para o servidor de um amigo ou trocou a internet pelo Tailscale: tira este computador do ar
-  // (inclusive um Funnel ativado agora há pouco nesta janela e não salvo)
-  if (endpoint || !config.internet) await despublicar(portaAntiga, porta);
+  // Foi para o servidor de um amigo ou trocou a internet pelo Tailscale: tira este computador do ar, se o Limb
+  // publicava (despublicar inclui um Funnel ativado agora há pouco nesta janela e não salvo; nunca o de outro programa)
+  if (endpoint || !config.internet) await despublicar(...(publicando ? [portaAntiga] : []));
+  conexaoSalva = true;
   reiniciar();
   return {};
 });
@@ -625,16 +686,17 @@ app.on('second-instance', (_e, argv) => {
 });
 app.on('open-url', (e, url) => { e.preventDefault(); linkPendente = url; tratarLink(); }); // macOS
 app.on('window-all-closed', () => { if (!bandeja) app.quit(); });
-// Fechando de vez hospedando pela internet: tira do ar antes (se outro programa usar esta porta depois,
-// ele não fica publicado na internet). Espera no máximo os 6 s do despublicar.
+// Fechando de vez hospedando pela internet (ou com um "Ativar" da janela Servidor ainda sem salvar): tira do ar
+// antes (se outro programa usar esta porta depois, ele não fica publicado na internet). Espera no máximo os 6 s
+// do despublicar.
 let despublicouAoSair = false;
 app.on('before-quit', (e) => {
   saindo = true;
   // !unico: é a segunda instância saindo logo ao abrir; o Funnel é da primeira, que continua no ar
-  if (!unico || !publicando || despublicouAoSair) return;
+  if (!unico || !(publicando || funnelsDaJanela.size || largando) || despublicouAoSair) return;
   despublicouAoSair = true;
   e.preventDefault();
-  despublicar().finally(() => app.quit());
+  Promise.all([despublicar(), largando]).finally(() => app.quit());
 });
 app.on('quit', () => { servidor?.kill(); tailscale.cancelarEspera(); });
 

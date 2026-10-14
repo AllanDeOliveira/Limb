@@ -49,7 +49,10 @@ clique em **Mais informações → Executar assim mesmo**.
 
 Ao abrir pela primeira vez, o app pergunta se você vai **hospedar** ou **entrar** no servidor de um amigo
 (veja [Jogar com os amigos](#jogar-com-os-amigos)). Depois, em **Criar conta**, escolha um nome e uma senha.
-Num servidor novo, a primeira conta é a do dono e não precisa de convite; as seguintes, só com o link.
+Num servidor novo, a primeira conta é a do dono e não precisa de convite, se criada no próprio computador
+que hospeda (o app ou um navegador em `localhost`); as seguintes, só com o link. Abrindo o seu próprio
+`https://….ts.net` no navegador antes disso, a tela avisa "Servidor novo": crie a conta no app, ou abra o link
+de convite (**Servidor → Copiar convite**).
 Recebeu um link de convite (`https://….ts.net/convite/…`)? Abra o link: ele leva ao download, e o app
 encontra o convite sozinho.
 
@@ -202,21 +205,26 @@ chat.seudominio.com {
 
 No app, cada amigo entra em `https://chat.seudominio.com`. Pelo navegador também funciona. Com
 `INVITE_CODE`, mande o link `https://chat.seudominio.com/convite/<código>`: o código vai dentro do link, e
-ninguém digita.
+ninguém digita. Num banco novo, crie a sua conta (a do dono) também por esse link: sem convite, só um pedido
+feito no próprio servidor, sem proxy no meio (`http://127.0.0.1:3000`, por um túnel SSH, por exemplo), cria
+a primeira conta.
 
 | Variável | Padrão | Para quê |
 |---|---|---|
 | `PORT` | `3000` | Porta HTTP |
 | `HOST` | todas as interfaces | `127.0.0.1` para aceitar só o proxy local |
 | `DB_FILE` | `limb.db` | Arquivo do banco (SQLite) |
-| `INVITE_CODE` | vazio | Se definido, só cria conta quem abrir o link de convite: o código vai dentro do link, `https://seu.dominio/convite/<código>` (e conta antiga sem senha só define a senha com ele). Código errado na página do convite conta no limite de tentativas por IP |
+| `INVITE_CODE` | vazio | Se definido, só cria conta quem abrir o link de convite (menos a primeira conta, a do dono, se criada na própria máquina e sem proxy): o código vai dentro do link, `https://seu.dominio/convite/<código>` (e conta antiga sem senha só define a senha com ele). Código errado na página do convite conta no limite de tentativas por IP |
 | `SERVER_NAME` | `Limb` | Nome que aparece na página de convite e em `/api/info` (até 60 caracteres) |
 | `ICE_SERVERS` | STUN do Google | Lista JSON de servidores STUN/TURN (se não for uma lista, usa o padrão e avisa no log) |
 | `CF_TURN_KEY_ID` + `CF_TURN_API_TOKEN` | vazio | Chave do TURN da Cloudflare (Realtime → TURN): quem está no 4G ou atrás de CGNAT entra na voz. Credenciais de 24 h, renovadas sozinhas; o token nunca sai do servidor |
 | `TRUST_PROXY` | vazio | `1` atrás de um proxy em **outra** máquina, para os limites de tentativas de login e de cadastros usarem o IP real (o último do `X-Forwarded-For`, o que o proxy acrescenta). Proxy na mesma máquina (Funnel do Tailscale, Caddy local) conecta por `127.0.0.1`/`::1`, e aí o `X-Forwarded-For` já vale sem `TRUST_PROXY` |
 
-`GET /api/info` devolve `{ convite, nome, versao }`: se o servidor só aceita convidados, o nome dele e a
-versão. O convite pela internet é `https://<servidor>/convite/<código>`; o app desktop também abre
+`GET /api/info` devolve `{ convite, primeiraConta, semDono, nome, versao }`: `convite` é true quando há `INVITE_CODE` e
+criar conta pede o link; `primeiraConta` é true enquanto o servidor não tem nenhuma conta e o pedido vem da
+própria máquina, sem proxy (aí a próxima conta, sem convite, é a do dono; pela internet o servidor vazio pede
+convite como sempre); `semDono` é esse servidor vazio visto de fora (não libera nada: a tela só explica que a
+conta do dono se cria no app de quem hospeda ou pelo link de convite); mais o nome e a versão. O convite pela internet é `https://<servidor>/convite/<código>`; o app desktop também abre
 `limb://entrar?servidor=<origem>&convite=<código>`.
 
 No app desktop, as mesmas opções ficam em `%APPDATA%\Limb\settings.json` (`porta`,
@@ -236,7 +244,7 @@ No app desktop, as mesmas opções ficam em `%APPDATA%\Limb\settings.json` (`por
   aberto). O limite de banda do Funnel não pesa na chamada: voz e tela vão direto entre as pessoas (ou pelo
   TURN); pelo Funnel passam só as páginas e as mensagens.
 - **Com o Funnel, o seu servidor fica alcançável por qualquer pessoa na internet.** Só o link de convite
-  deixa alguém criar conta: mande só para os amigos e não poste em lugar público. Vazou? **Servidor → Gerar
+  deixa alguém criar conta (a não ser a sua, a primeira, criada no próprio computador): mande só para os amigos e não poste em lugar público. Vazou? **Servidor → Gerar
   link novo**.
 - **Se o Windows desligar ou o app travar, o Funnel continua ligado** apontando para a porta do Limb; ele é
   corrigido na próxima vez que o Limb abrir.

@@ -63,10 +63,11 @@ export function lerConvite(texto) {
 }
 
 // O que a pessoa tinha copiado ao abrir o app pela primeira vez: só conta se for mesmo um convite do Limb
-// (link /convite/, limb:// ou a mensagem do convite). Qualquer outro link copiado não vira "Entrar".
+// (link /convite/, limb://, a mensagem que o Limb gera, de qualquer versão, ou o "Código de convite:" da antiga).
+// Qualquer outro link copiado não vira "Entrar", nem o do download (github.com/…/Limb/releases tem "Limb").
 export function lerConviteCopiado(texto) {
   const t = String(texto ?? '').slice(0, 2000);
-  if (!/limb:\/\/entrar|https?:\/\/[^\s/]+\/convite\/|\bLimb\b/i.test(t)) return null;
+  if (!/limb:\/\/entrar|https?:\/\/[^\s/]+\/convite\/|\bBora conversar no Limb\b|c[óo]digo de convite\s*:/i.test(t)) return null;
   return lerConvite(t);
 }
 

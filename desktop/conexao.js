@@ -92,6 +92,9 @@ function escolherComo(c, porClique = false) {
   $('tsDica').textContent = c === 'internet'
     ? 'Só você precisa dele: seus amigos não instalam nada. Grátis.'
     : 'O Tailscale liga você e seus amigos com segurança, sem mexer no roteador. Grátis.';
+  // Código curto escolhido à mão antes da 1.8: pela internet ele é a tranca, então troca já, antes de o link
+  // aparecer (e de alguém copiar um link que o "Salvar" invalidaria)
+  if (c === 'internet' && modo === 'hospedar' && cfg && codigoConvite && codigoConvite.length < 6) { codigoConvite = ''; gerarLink(); }
   atualizarFirewall();
   atualizarConvite();
   desenharFunnel();

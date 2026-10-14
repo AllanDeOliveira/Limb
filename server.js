@@ -355,6 +355,16 @@ function ipDe(req) {
   const ultimo = String(req.headers['x-forwarded-for'] ?? '').split(',').at(-1).trim();
   return isIP(ultimo) ? ultimo : socket; // sem cabeçalho (o app de quem hospeda) ou com lixo: o do socket
 }
+// Sem contas, a primeira é do dono, mas só para quem está NESTE computador (o app de quem hospeda, um
+// navegador em localhost). Funnel/Caddy também chegam pelo loopback, mas sempre com X-Forwarded-For: quem
+// vem da internet nunca é o "dono" de um servidor vazio (o nome do Funnel sai nos registros públicos de
+// certificados, e robôs visitam endereços novos em minutos).
+const daMaquina = (req) => LOOPBACK.has(req.socket.remoteAddress)
+  && !req.headers['x-forwarded-for'] && !req.headers.forwarded && !req.headers['x-forwarded-host'] && !req.headers['x-real-ip'];
+const primeiraContaPara = (req) => semContas() && daMaquina(req);
+// Servidor vazio visto de fora (quem hospeda testando o próprio link .ts.net no navegador): continua pedindo
+// convite, mas diz onde criar a conta do dono em vez de mandar "pedir o link para quem hospeda"
+const SERVIDOR_NOVO = 'Servidor novo: crie a primeira conta no app do Limb de quem hospeda, ou abra o link de convite (Servidor → Copiar convite).';
 
 // ponytail: limites em memória; somem ao reiniciar o servidor
 const esperaDe = (ms) => (ms >= 60_000 ? `${Math.ceil(ms / 60_000)} min` : `${Math.ceil(ms / 1000)} s`);
@@ -545,8 +555,14 @@ if (CF) buscarTurn(); // em segundo plano: o primeiro READY já costuma encontra
 
 const rotas = [
   // O que a tela de login (e o "Testar" do app desktop) precisa saber antes de entrar
-  // primeiraConta: servidor sem ninguém ainda. A primeira conta (a do dono) não precisa de convite.
-  ['GET', /^\/api\/info$/, () => ({ convite: !!codigoConvite && !semContas(), primeiraConta: semContas(), nome: NOME_SERVIDOR, versao: VERSAO }), { publica: true }],
+  // primeiraConta: servidor sem ninguém ainda, visto deste computador. A primeira conta (a do dono) não precisa
+  // de convite; quem vem de fora (Funnel, proxy, rede) encontra o servidor vazio pedindo convite como sempre.
+  // semDono: esse mesmo servidor vazio, visto de fora. Não libera nada, só muda o aviso da tela.
+  ['GET', /^\/api\/info$/, (req) => {
+    const primeira = primeiraContaPara(req);
+    const convite = !!codigoConvite && !primeira;
+    return { convite, primeiraConta: primeira, semDono: convite && semContas(), nome: NOME_SERVIDOR, versao: VERSAO };
+  }, { publica: true }],
 
   // Entrar numa conta que já existe; cada login é uma sessão nova (um token por dispositivo).
   // Nome desconhecido e senha errada dão a mesma resposta, no mesmo tempo: não dá para descobrir quem tem conta.
@@ -585,10 +601,12 @@ const rotas = [
     const ip = ipDe(req);
     bloqueado(ip);
     const name = nomeDe(req.body.username);
-    // A primeira conta do servidor é a do dono: entra sem convite (quem hospeda não precisa de link para si mesmo)
+    // A primeira conta do servidor é a do dono: entra sem convite se pedida deste computador (quem hospeda não
+    // precisa de link para si mesmo; quem chega pela internet precisa)
     const convidado = !codigoConvite || conviteOk(req.body.invite);
-    const semConvite = () => new HttpError(403, req.body.invite ? CONVITE_VENCIDO : 'Este servidor só aceita convidados. Peça o link de convite para quem hospeda.', { convite: true });
-    if (!convidado && !semContas()) { falhou(ip); throw semConvite(); }
+    const semConvite = () => new HttpError(403, req.body.invite ? CONVITE_VENCIDO
+      : semContas() ? SERVIDOR_NOVO : 'Este servidor só aceita convidados. Peça o link de convite para quem hospeda.', { convite: true });
+    if (!convidado && !primeiraContaPara(req)) { falhou(ip); throw semConvite(); }
     const senha = senhaNova(String(req.body.password ?? ''), name);
     const emUso = () => q('SELECT 1 FROM users WHERE name = ?').get(name);
     // antes do scrypt: nome ocupado não gasta CPU, e conta como erro (senão dá para repetir sem limite)
@@ -598,7 +616,7 @@ const rotas = [
     // confere de novo depois do await: dois cadastros com o mesmo nome ao mesmo tempo não passam os dois
     if (emUso()) { desfazer(); falhou(ip); throw new HttpError(409, 'Esse nome de usuário já está em uso'); }
     // dois "primeiros" ao mesmo tempo: só um passa sem convite
-    if (!convidado && !semContas()) { desfazer(); falhou(ip); throw semConvite(); }
+    if (!convidado && !primeiraContaPara(req)) { desfazer(); falhou(ip); throw semConvite(); }
     const u = { id: snowflake(), username: name };
     // users.token é NOT NULL UNIQUE desde a primeira versão: ganha um valor aleatório que nunca é usado
     q('INSERT INTO users (id, name, token, senha) VALUES (?, ?, ?, ?)').run(u.id, name, tokenAleatorio(), hash);

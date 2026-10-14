@@ -52,6 +52,10 @@ test('convite copiado: só o que é mesmo convite do Limb vira "Entrar"', () => 
   assert.equal(lerConviteCopiado('https://www.google.com/search?q=limbo'), null);
   assert.equal(lerConviteCopiado('192.168.0.1'), null);
   assert.equal(lerConviteCopiado('Limb é legal'), null); // fala do Limb, mas sem endereço
+  // o link do download (da página de convite, do README) ainda copiado ao abrir o app: não é convite
+  assert.equal(lerConviteCopiado('https://github.com/AllanDeOliveira/Limb/releases/latest'), null);
+  assert.equal(lerConviteCopiado('baixa aqui: https://github.com/AllanDeOliveira/Limb/releases/download/v1.8.0/Limb-1.8.0-instalador.exe'), null);
+  assert.equal(lerConviteCopiado('baixa o Limb: https://github.com/AllanDeOliveira/Limb'), null);
   assert.equal(lerConviteCopiado(''), null);
 });
 

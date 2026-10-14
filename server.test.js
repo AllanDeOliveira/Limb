@@ -71,7 +71,7 @@ test('fluxo completo', async (t) => {
   assert.equal(s2, 200); assert.equal(a2.user.id, a.user.id); assert.notEqual(a2.token, a.token); // mesma conta, outro dispositivo
   const [s3, errada] = await api('POST', '/login', { username: 'ana', password: 'errada!' });
   assert.equal(s3, 401); assert.equal(errada.message, ninguem.message);
-  assert.deepEqual((await api('GET', '/info'))[1], { convite: false, primeiraConta: false, nome: 'Limb', versao: VERSAO });
+  assert.deepEqual((await api('GET', '/info'))[1], { convite: false, primeiraConta: false, semDono: false, nome: 'Limb', versao: VERSAO });
   const [, b] = await api('POST', '/register', { username: 'bia', password: SENHA_BIA });
 
   const A = await identify(a.token), Bc = await identify(b.token);
@@ -272,11 +272,11 @@ test('fluxo completo', async (t) => {
 
   await t.test('convite: a primeira conta (do dono) não precisa; as outras só com o código do link; entrar não precisa', async () => {
     const C = await subir({ INVITE_CODE: 'amigos' });
-    assert.deepEqual((await api('GET', '/info', null, null, C))[1], { convite: false, primeiraConta: true, nome: 'Limb', versao: VERSAO });
+    assert.deepEqual((await api('GET', '/info', null, null, C))[1], { convite: false, primeiraConta: true, semDono: false, nome: 'Limb', versao: VERSAO });
     // dois "primeiros" ao mesmo tempo, sem convite: só um vira dono
     const corrida = await Promise.all(['dono', 'intruso'].map((n) => api('POST', '/register', { username: n, password: 'pudim-de-leite-9' }, null, C)));
     assert.deepEqual(corrida.map(([s]) => s).sort(), [200, 403]);
-    assert.deepEqual((await api('GET', '/info', null, null, C))[1], { convite: true, primeiraConta: false, nome: 'Limb', versao: VERSAO });
+    assert.deepEqual((await api('GET', '/info', null, null, C))[1], { convite: true, primeiraConta: false, semDono: false, nome: 'Limb', versao: VERSAO });
     const conta = { username: 'ze', password: 'segredo-123x' };
     assert.equal((await api('POST', '/register', { ...conta, username: 'zé' }, null, C))[0], 400);
     const [s1, sem] = await api('POST', '/register', conta, null, C);
@@ -500,7 +500,7 @@ test('página de convite: nome e código escapados, prévia (og:) e cabeçalhos;
   assert.equal(raiz.status, 200);
   assert.equal(raiz.headers.get('x-frame-options'), 'DENY');
   assert.match(raiz.headers.get('content-security-policy'), /frame-ancestors 'none'/);
-  assert.deepEqual((await api('GET', '/info', null, null, C))[1], { convite: false, primeiraConta: true, nome: NOME, versao: VERSAO }); // ainda sem contas
+  assert.deepEqual((await api('GET', '/info', null, null, C))[1], { convite: false, primeiraConta: true, semDono: false, nome: NOME, versao: VERSAO }); // ainda sem contas
 });
 
 test('página de convite não serve para chutar códigos: cada código errado conta no limite por IP', async () => {
@@ -520,6 +520,31 @@ test('página de convite não serve para chutar códigos: cada código errado co
   // sem código não chuta nada: não conta
   for (let i = 0; i < 12; i++) assert.equal((await ver('', '192.0.2.1')).status, 404);
   assert.equal((await ver('k7m2pq9xa3bc', '192.0.2.1')).status, 200);
+});
+
+test('primeira conta sem convite: só deste computador; pela internet (Funnel/proxy) o servidor vazio pede convite', async () => {
+  const S = await subir({ INVITE_CODE: 'k7m2pq9xa3bc' });
+  const de = (cab) => ({ 'Content-Type': 'application/json', ...cab });
+  const info = async (cab) => (await fetch(`${S}/api/info`, { headers: de(cab) })).json();
+  const cadastrar = (cab, corpo) => fetch(`${S}/api/register`, { method: 'POST', headers: de(cab), body: JSON.stringify({ password: 'canjica-doce-3', ...corpo }) });
+  // quem chega pelo Funnel (loopback + X-Forwarded-For) não ganha a primeira conta: só fica sabendo que o servidor
+  // é novo (semDono), para a tela dizer onde o dono cria a conta (e não "peça o link para quem hospeda")
+  for (const cab of [{ 'X-Forwarded-For': '203.0.113.9' }, { Forwarded: 'for=203.0.113.9' }, { 'X-Real-IP': '203.0.113.9' }]) {
+    assert.deepEqual(await info(cab), { convite: true, primeiraConta: false, semDono: true, nome: 'Limb', versao: VERSAO }, JSON.stringify(cab));
+  }
+  const robo = await cadastrar({ 'X-Forwarded-For': '203.0.113.9' }, { username: 'robo' });
+  assert.equal(robo.status, 403);
+  const negado = await robo.json();
+  assert.equal(negado.convite, true);
+  assert.match(negado.message, /Servidor novo: crie a primeira conta no app do Limb de quem hospeda/);
+  // mas com o link de convite entra normalmente, mesmo sendo o primeiro
+  const amigo = await cadastrar({ 'X-Forwarded-For': '198.51.100.7' }, { username: 'amigo', invite: 'k7m2pq9xa3bc' });
+  assert.equal(amigo.status, 200);
+  assert.equal((await info({ 'X-Forwarded-For': '203.0.113.9' })).semDono, false); // já tem dono
+  // com uma conta criada, ninguém mais entra sem convite, nem deste computador
+  const dono = await cadastrar({}, { username: 'dono' });
+  assert.equal(dono.status, 403);
+  assert.match((await dono.json()).message, /só aceita convidados/);
 });
 
 test('"Gerar link novo": o app troca o convite na hora, sem reiniciar; contas e sessões continuam', async () => {

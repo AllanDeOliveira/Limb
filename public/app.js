@@ -1203,6 +1203,7 @@ function encerrarLocal() {
   $('#login').hidden = false;
   document.body.classList.remove('nav', 'membros', 'busca-aberta');
   definirModo('entrar');
+  lerInfo(); // o servidor pode ter ganhado contas (ou trocado de convite) desde que a página abriu
 }
 // "Sair da conta": o servidor revoga o token deste aparelho. fetch direto, não api(): api() chama
 // sessaoTerminou() no 401, e sair não depende da resposta (sem rede, ao menos esquece o token aqui)
@@ -1220,7 +1221,15 @@ function sessaoTerminou() {
 }
 
 // Tela de entrar: "Entrar" (conta existente) ou "Criar conta", como no Discord
-let modoLogin = 'entrar', conviteNoServidor = false, conviteContaAntiga = false, nomeServidor = '', colarAberto = false, primeiraConta = false;
+let modoLogin = 'entrar', conviteNoServidor = false, conviteContaAntiga = false, nomeServidor = '', colarAberto = false, primeiraConta = false, semDono = false;
+// Conta de antes das senhas: o convite só vai no login depois que o servidor disse que ESTE nome é uma delas
+// (como na 1.7: errar o próprio nome e cair na conta antiga de outra pessoa não pode tomar a conta dela)
+let contaAntigaNome = '';
+const nomeDigitado = () => loginForm.username.value.trim().toLowerCase();
+// Servidor sem contas aberto de fora (quem hospeda testando o próprio link .ts.net): diz onde criar a conta do dono
+const semConviteAviso = () => (semDono
+  ? 'Servidor novo: crie a primeira conta no app do Limb de quem hospeda, ou abra o link de convite (Servidor → Copiar convite).'
+  : 'Este servidor só aceita convidados. Peça o link de convite para quem hospeda.');
 
 // Como no Discord, o link é o convite: o código vem escondido nele (/#convite=<código>) e ninguém vê nem
 // digita. Fica guardado neste navegador (o localStorage já é separado por servidor) para sobreviver a
@@ -1229,6 +1238,10 @@ const conviteSalvo = { get: () => { try { return localStorage.getItem('convite')
   set: (v) => { try { v ? localStorage.setItem('convite', v) : localStorage.removeItem('convite'); } catch {} } };
 let convite = conviteSalvo.get();
 const guardarConvite = (c) => { convite = c; conviteSalvo.set(c); };
+// O último convite que o servidor recusou: o app desktop recoloca o #convite= do link antigo a cada abertura,
+// e ele não pode apagar um link novo que a pessoa colou aqui
+const conviteRecusado = { get: () => { try { return localStorage.getItem('conviteRecusado') ?? ''; } catch { return ''; } },
+  set: (v) => { try { localStorage.setItem('conviteRecusado', v); } catch {} } };
 // Link colado: …/convite/<código>, …/#convite=<código>, limb://entrar?…&convite=<código> ou a mensagem inteira
 // do convite; em último caso, o código sozinho. null = não achei convite nenhum.
 function lerLinkConvite(texto) {
@@ -1254,7 +1267,7 @@ function mostrarConvite() {
   if (dono) trocar($('#conviteOk'), 'Este servidor ainda não tem contas: a primeira é a sua, de dono.');
   else trocar($('#conviteOk'), '✓ Você foi convidado para ', h('b', { textContent: nomeServidor || 'este servidor' }));
   $('#semConvite').hidden = !!convite || !precisa;
-  $('#semConviteTexto').textContent = criar ? 'Este servidor só aceita convidados. Peça o link de convite para quem hospeda.'
+  $('#semConviteTexto').textContent = criar ? semConviteAviso()
     : 'Esta conta é de antes das senhas: para criar a senha dela, cole o link de convite do servidor.';
   $('#tenhoLink').hidden = colarAberto;
   $('#colarCampo').hidden = !colarAberto;
@@ -1321,7 +1334,11 @@ function mostrarSenha(ver) {
 }
 $('#mostrarSenha').addEventListener('click', (e) => mostrarSenha(e.currentTarget.getAttribute('aria-pressed') !== 'true'));
 loginForm.password.addEventListener('input', atualizarRegras);
-loginForm.username.addEventListener('input', atualizarRegras);
+loginForm.username.addEventListener('input', () => {
+  atualizarRegras();
+  // trocou o nome: o aviso da conta antiga era de outro nome
+  if (conviteContaAntiga && nomeDigitado() !== contaAntigaNome) { conviteContaAntiga = false; contaAntigaNome = ''; mostrarConvite(); }
+});
 avisarCaps([loginForm.password, loginForm.confirmar], $('#capsAviso'));
 $('#trocaModo').addEventListener('click', () => { definirModo(modoLogin === 'criar' ? 'entrar' : 'criar'); loginForm.username.focus(); });
 loginForm.addEventListener('submit', async (e) => {
@@ -1330,13 +1347,13 @@ loginForm.addEventListener('submit', async (e) => {
   erro.textContent = '';
   if (criar && f.password.value !== f.confirmar.value) { erro.textContent = 'As senhas não são iguais.'; f.confirmar.focus(); return; }
   // Enter num campo com o botão escondido (servidor só de convidados, sem convite): nem tenta
-  if (botao.hidden) { erro.textContent = 'Este servidor só aceita convidados. Peça o link de convite para quem hospeda.'; return; }
+  if (botao.hidden) { erro.textContent = semConviteAviso(); return; }
   botao.disabled = true;
   botao.textContent = criar ? 'Criando conta…' : 'Entrando…';
-  const enviado = convite;
+  // No login, o convite só vai para reivindicar a conta de antes das senhas que o servidor apontou (2º clique)
+  const enviado = convite && (criar || (conviteContaAntiga && nomeDigitado() === contaAntigaNome)) ? convite : '';
   try {
-    // fetch direto: o 401 de senha errada não é sessão terminada. O convite vai também no login: é o que
-    // deixa uma conta de antes das senhas criar a dela (nas outras, o servidor nem olha)
+    // fetch direto: o 401 de senha errada não é sessão terminada
     const r = await fetch(`/api/${criar ? 'register' : 'login'}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: f.username.value, password: f.password.value, invite: enviado || undefined }),
@@ -1344,16 +1361,23 @@ loginForm.addEventListener('submit', async (e) => {
     const d = await r.json().catch(() => ({}));
     if (!r.ok) {
       if (d.convite) {
+        primeiraConta = false; // pediu convite: o servidor já tem dono
         // convite recusado: o guardado não vale mais (link antigo, "Gerar link novo"); volta o jeito de colar outro
-        if (enviado && enviado === convite) guardarConvite('');
-        if (criar) conviteNoServidor = true; else conviteContaAntiga = true;
+        if (enviado) { conviteRecusado.set(enviado); if (enviado === convite) guardarConvite(''); }
+        if (criar) conviteNoServidor = true;
+        else { conviteContaAntiga = true; contaAntigaNome = nomeDigitado(); }
         mostrarConvite();
         if (!$('#tenhoLink').hidden) $('#tenhoLink').focus();
-        throw new Error(enviado ? 'Este convite não vale mais. Peça um link novo para quem hospeda.' : d.message || `Erro ${r.status}`);
+        if (enviado) throw new Error('Este convite não vale mais. Peça um link novo para quem hospeda.');
+        // conta antiga e o convite já está aqui: quem reivindica é o segundo clique, de propósito
+        if (!criar && convite) throw new Error('Esta conta é de antes das senhas. Se ela é sua, clique em Entrar de novo: esta senha passa a ser a dela.');
+        throw new Error(d.message || `Erro ${r.status}`);
       }
       throw new Error(d.message || `Erro ${r.status}`);
     }
-    if (enviado) guardarConvite(''); // já serviu: não fica guardado à toa
+    if (convite) guardarConvite(''); // já tem conta: não fica guardado à toa
+    primeiraConta = semDono = conviteContaAntiga = false;
+    contaAntigaNome = '';
     entrar(d.token);
   } catch (err) {
     erro.textContent = err instanceof TypeError ? 'Não foi possível falar com o servidor. Confira a conexão e tente de novo.' : err.message;
@@ -1370,19 +1394,26 @@ const conviteUrl = /[#&]convite=([^&]+)/.exec(location.hash)?.[1];
 if (conviteUrl) {
   let c = null;
   try { c = conviteValido(decodeURIComponent(conviteUrl)); } catch { /* %E0%A4 cortado: ignora */ }
-  if (c) guardarConvite(c);
+  // o link antigo que o servidor já recusou não apaga um novo que a pessoa colou
+  if (c && c !== conviteRecusado.get()) guardarConvite(c);
   history.replaceState(null, '', location.pathname + location.search);
 }
-// Quem chegou por convite e nunca entrou aqui quer criar conta; o resto, entrar
-definirModo(conviteUrl && !jaEntrou.get() ? 'criar' : 'entrar');
-// Se o servidor só aceita convidados, e o nome dele para o "✓ Você foi convidado para …"
-fetch('/api/info').then((r) => r.json()).then((i) => {
-  conviteNoServidor = !!i.convite;
-  primeiraConta = i.primeiraConta === true;
-  nomeServidor = typeof i.nome === 'string' ? i.nome.slice(0, 60) : '';
-  if (primeiraConta && !salvo.get()) definirModo('criar'); // servidor novo: o dono chega para criar a conta
-  mostrarConvite();
-}).catch(() => {});
+// Quem chegou por convite (agora ou antes de recarregar: ele fica guardado) e nunca entrou aqui quer criar
+// conta; o resto, entrar
+definirModo((conviteUrl || convite) && !jaEntrou.get() ? 'criar' : 'entrar');
+// Se o servidor só aceita convidados, se ainda não tem contas, e o nome dele para o "✓ Você foi convidado para …".
+// Lido ao abrir e de novo a cada volta para a tela de entrar (a página não recarrega ao sair da conta).
+function lerInfo(abrindo = false) {
+  fetch('/api/info').then((r) => r.json()).then((i) => {
+    conviteNoServidor = !!i.convite;
+    primeiraConta = i.primeiraConta === true;
+    semDono = i.semDono === true;
+    nomeServidor = typeof i.nome === 'string' ? i.nome.slice(0, 60) : '';
+    if (abrindo && primeiraConta && !salvo.get()) definirModo('criar'); // servidor novo: o dono chega para criar a conta
+    mostrarConvite();
+  }).catch(() => {});
+}
+lerInfo(true);
 // App desktop: trocar de servidor (hospedar aqui ou entrar no de um amigo)
 if (ponte()?.abrirConexao) {
   $('#trocarServidor').hidden = false;

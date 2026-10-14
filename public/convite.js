@@ -8,12 +8,13 @@ const acoes = $('#acoes'), navegador = $('#navegador'), baixar = $('#baixar'), a
 
 const ua = navigator.userAgent;
 const dados = navigator.userAgentData; // Chrome/Edge; Firefox e Safari só têm o userAgent
-const celular = dados ? dados.mobile : /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+// o Safari do iPad se passa por Mac ("Macintosh", sem "Mobile"): a tela de toque entrega
+const celular = dados ? dados.mobile : /Android|iPhone|iPad|iPod|Mobile/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
 const windows = !celular && (dados?.platform ? dados.platform === 'Windows' : /Windows NT/.test(ua));
 
 // limb://entrar?servidor=…&convite=… (o app desktop registra o protocolo)
 abrirApp.href = `limb://entrar?servidor=${encodeURIComponent(location.origin)}${codigo ? `&convite=${encodeURIComponent(codigo)}` : ''}`;
-abrirApp.hidden = celular; // não existe Limb para celular: pelo navegador mesmo
+abrirApp.hidden = !windows; // o Limb só existe para Windows: no resto (celular, iPad, Mac, Linux) ninguém abre limb://
 
 // No PC com Windows o caminho principal é baixar; no resto, entrar pelo navegador (já é o padrão do HTML)
 if (windows) {
@@ -22,7 +23,7 @@ if (windows) {
   acoes.prepend(baixar);
   baixar.after(abrirApp);
 }
-$('#smartscreen').hidden = celular;
+$('#smartscreen').hidden = !windows;
 
 baixar.addEventListener('click', async (e) => {
   if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return; // nova aba/janela: o navegador decide
