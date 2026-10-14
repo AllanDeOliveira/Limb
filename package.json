@@ -1,7 +1,7 @@
 {
   "name": "limb",
   "productName": "Limb",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "private": true,
   "description": "Chat de texto e voz com compartilhamento de tela para você e seus amigos, que roda no seu computador.",
   "author": "Limb contributors",
