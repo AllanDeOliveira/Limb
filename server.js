@@ -36,13 +36,16 @@ const db = new DatabaseSync(process.env.DB_FILE || 'limb.db', { readBigInts: tru
 // WAL: leituras não esperam escritas; NORMAL é seguro com WAL e evita um fsync por mensagem
 db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 3000;');
 db.exec(`
-  CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, token TEXT UNIQUE NOT NULL);
+  -- senha: 'scrypt$N$r$p$sal$hash'. token: vem da primeira versão (NOT NULL UNIQUE); guarda um valor aleatório
+  -- que nunca é devolvido nem aceito (o login de verdade é por sessão, em sessions)
+  CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, token TEXT UNIQUE NOT NULL, senha TEXT);
   CREATE TABLE IF NOT EXISTS guilds (id INTEGER PRIMARY KEY, name TEXT NOT NULL, owner_id INTEGER);
   CREATE TABLE IF NOT EXISTS channels (id INTEGER PRIMARY KEY, guild_id INTEGER NOT NULL REFERENCES guilds(id), name TEXT NOT NULL,
     type INTEGER NOT NULL DEFAULT 0);
   CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL REFERENCES channels(id),
-    author_id INTEGER NOT NULL REFERENCES users(id), content TEXT NOT NULL, edited_timestamp TEXT);
+    author_id INTEGER NOT NULL REFERENCES users(id), content TEXT NOT NULL, edited_timestamp TEXT,
+    reply_to INTEGER, mentions TEXT NOT NULL DEFAULT '[]');
   CREATE INDEX IF NOT EXISTS messages_channel ON messages(channel_id, id);
   CREATE TABLE IF NOT EXISTS reactions (
     message_id INTEGER NOT NULL, user_id INTEGER NOT NULL, emoji TEXT NOT NULL,
@@ -56,33 +59,7 @@ db.exec(`
     criado INTEGER NOT NULL, usado INTEGER NOT NULL, expira INTEGER NOT NULL, dispositivo TEXT NOT NULL DEFAULT '', ip TEXT);
   CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 `);
-// Bancos criados pela versão anterior não têm estas colunas
-const colunas = db.prepare("SELECT name FROM pragma_table_info('messages')").all().map((c) => c.name);
-if (!colunas.includes('reply_to')) db.exec('ALTER TABLE messages ADD COLUMN reply_to INTEGER');
-if (!colunas.includes('mentions')) db.exec("ALTER TABLE messages ADD COLUMN mentions TEXT NOT NULL DEFAULT '[]'");
-// senha: 'scrypt$N$r$p$sal$hash' (antes: 'sal:hash'). null = conta antiga, do tempo em que só o nome bastava
-if (!db.prepare("SELECT name FROM pragma_table_info('users')").all().some((c) => c.name === 'senha')) db.exec('ALTER TABLE users ADD COLUMN senha TEXT');
-
 const q = (sql) => db.prepare(sql);
-// v1: o token fixo de cada conta (users.token) vira a primeira sessão dela, para ninguém precisar entrar
-// de novo; a coluna fica com um valor aleatório que nunca é devolvido nem aceito (é NOT NULL UNIQUE)
-if (Number(q('PRAGMA user_version').get().user_version) < 1) {
-  db.exec('BEGIN');
-  try {
-    const agora = Date.now();
-    for (const u of q('SELECT id, token FROM users').all()) {
-      q(`INSERT OR IGNORE INTO sessions (id, user_id, token_hash, criado, usado, expira, dispositivo) VALUES (?, ?, ?, ?, ?, ?, 'Sessão anterior')`)
-        .run(snowflake(), u.id, hashToken(u.token), agora, agora, agora + SESSAO_TTL);
-      q('UPDATE users SET token = ? WHERE id = ?').run(tokenAleatorio(), u.id);
-    }
-    db.exec('PRAGMA user_version = 1; COMMIT');
-  } catch (e) { db.exec('ROLLBACK'); throw e; }
-}
-if (!q("SELECT name FROM pragma_table_info('channels')").all().some((c) => c.name === 'type')) {
-  db.exec('ALTER TABLE channels ADD COLUMN type INTEGER NOT NULL DEFAULT 0');
-  // servidores que já existiam ganham um canal de voz, como os novos
-  for (const g of q('SELECT id FROM guilds').all()) criarCanal(g.id, 'Sala de voz', CANAL.VOZ);
-}
 if (!q('SELECT 1 FROM guilds').get()) criarGuild('Limb', null);
 
 function criarGuild(name, ownerId) {
@@ -314,15 +291,11 @@ async function gerarHash(senha) {
   const sal = randomBytes(16);
   return `scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$${sal.toString('hex')}$${(await scryptP(senha, sal, 32, SCRYPT)).toString('hex')}`;
 }
-const hashEmDia = (guardado) => guardado.startsWith(`scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$`);
 async function conferir(senha, guardado) {
-  const partes = String(guardado).split('$');
-  // formato antigo 'sal:hash': parâmetros padrão do scrypt do Node (N=2^14, r=8, p=1)
-  const [N, r, p, sal, hash] = partes[0] === 'scrypt' && partes.length === 6
-    ? [...partes.slice(1, 4).map(Number), partes[4], partes[5]] : [2 ** 14, 8, 1, ...String(guardado).split(':')];
+  const [tipo, N, r, p, sal, hash] = String(guardado).split('$');
   const esperado = Buffer.from(hash ?? '', 'hex');
-  if (!sal || esperado.length !== 32) return false;
-  return timingSafeEqual(await scryptP(senha, Buffer.from(sal, 'hex'), 32, { N, r, p, maxmem: SCRYPT.maxmem }), esperado);
+  if (tipo !== 'scrypt' || !sal || esperado.length !== 32) return false;
+  return timingSafeEqual(await scryptP(senha, Buffer.from(sal, 'hex'), 32, { N: Number(N), r: Number(r), p: Number(p), maxmem: SCRYPT.maxmem }), esperado);
 }
 // Nome que não existe confere contra este hash: a resposta demora o mesmo que uma senha errada
 const HASH_FALSO = gerarHash(randomBytes(16).toString('hex'));
@@ -578,26 +551,9 @@ const rotas = [
     if (!senha || senha.length > 128) throw new HttpError(400, 'Digite a senha (até 128 caracteres)');
     tentativa(ip, name);
     const u = q('SELECT * FROM users WHERE name = ?').get(name);
-    if (u && u.senha == null) {
-      // Conta de antes das senhas: o primeiro login define a senha. Com convite no servidor, só quem tem o código
-      // reivindica a conta. Sem convite, qualquer um que alcança o servidor já cria conta: exigir mais só
-      // trancaria o dono de fora.
-      if (codigoConvite && !conviteOk(req.body.invite)) {
-        throw new HttpError(403, req.body.invite ? CONVITE_VENCIDO
-          : 'Esta conta é de antes das senhas. Para criar a senha dela, cole também o link de convite do servidor.', { convite: true });
-      }
-      const hash = await gerarHash(senhaNova(senha, name)); // senha fraca (400) não zera os contadores de erro
-      acertou(ip, name);
-      q('UPDATE users SET senha = ? WHERE id = ?').run(hash, u.id);
-    } else {
-      const guardado = u?.senha ?? (await HASH_FALSO);
-      const ok = await conferir(senha, guardado);
-      // hash antigo (N=2^14) custa metade: mais um scrypt igual, para o tempo não entregar quais contas existem
-      if (!hashEmDia(guardado)) await scryptP(senha, randomBytes(16), 32, { N: 2 ** 14, r: 8, p: 1 });
-      if (!u || !ok) throw new HttpError(401, 'Usuário ou senha incorretos');
-      acertou(ip, name);
-      if (!hashEmDia(u.senha)) q('UPDATE users SET senha = ? WHERE id = ?').run(await gerarHash(senha), u.id); // formato antigo: refaz
-    }
+    const ok = await conferir(senha, u?.senha ?? (await HASH_FALSO));
+    if (!u || !ok) throw new HttpError(401, 'Usuário ou senha incorretos');
+    acertou(ip, name);
     return { token: criarSessao(u.id, req), user: { id: u.id, username: u.name } };
   }, { publica: true }],
 
@@ -623,7 +579,6 @@ const rotas = [
     // dois "primeiros" ao mesmo tempo: só um passa sem convite
     if (!convidado && !primeiraContaPara(req)) { desfazer(); falhou(ip); throw semConvite(); }
     const u = { id: snowflake(), username: name };
-    // users.token é NOT NULL UNIQUE desde a primeira versão: ganha um valor aleatório que nunca é usado
     q('INSERT INTO users (id, name, token, senha) VALUES (?, ?, ?, ?)').run(u.id, name, tokenAleatorio(), hash);
     broadcast('USER_CREATE', u);
     return { token: criarSessao(u.id, req), user: u };
@@ -637,11 +592,9 @@ const rotas = [
     const ip = ipDe(req);
     const nova = senhaNova(String(req.body.senha_nova ?? ''), user.username);
     const { senha } = q('SELECT senha FROM users WHERE id = ?').get(user.id);
-    if (senha != null) { // conta de antes das senhas que entrou pelo token antigo: não tem senha atual para conferir
-      tentativa(ip, user.username);
-      if (!(await conferir(String(req.body.senha_atual ?? ''), senha))) throw new HttpError(403, 'A senha atual está incorreta');
-      acertou(ip, user.username);
-    }
+    tentativa(ip, user.username);
+    if (!(await conferir(String(req.body.senha_atual ?? ''), senha))) throw new HttpError(403, 'A senha atual está incorreta');
+    acertou(ip, user.username);
     q('UPDATE users SET senha = ? WHERE id = ?').run(await gerarHash(nova), user.id);
     revogar(outrasSessoes(user, req));
     return null;

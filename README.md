@@ -214,7 +214,7 @@ a primeira conta.
 | `PORT` | `3000` | Porta HTTP |
 | `HOST` | todas as interfaces | `127.0.0.1` para aceitar só o proxy local |
 | `DB_FILE` | `limb.db` | Arquivo do banco (SQLite) |
-| `INVITE_CODE` | vazio | Se definido, só cria conta quem abrir o link de convite (menos a primeira conta, a do dono, se criada na própria máquina e sem proxy): o código vai dentro do link, `https://seu.dominio/convite/<código>` (e conta antiga sem senha só define a senha com ele). Código errado na página do convite conta no limite de tentativas por IP |
+| `INVITE_CODE` | vazio | Se definido, só cria conta quem abrir o link de convite (menos a primeira conta, a do dono, se criada na própria máquina e sem proxy): o código vai dentro do link, `https://seu.dominio/convite/<código>`. Código errado na página do convite conta no limite de tentativas por IP |
 | `SERVER_NAME` | `Limb` | Nome que aparece na página de convite e em `/api/info` (até 60 caracteres) |
 | `ICE_SERVERS` | STUN do Google | Lista JSON de servidores STUN/TURN (se não for uma lista, usa o padrão e avisa no log) |
 | `CF_TURN_KEY_ID` + `CF_TURN_API_TOKEN` | vazio | Chave do TURN da Cloudflare (Realtime → TURN): quem está no 4G ou atrás de CGNAT entra na voz. Credenciais de 24 h, renovadas sozinhas; o token nunca sai do servidor |

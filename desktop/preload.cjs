@@ -20,4 +20,3 @@ const api = {
   entrarPorConvite: (texto) => ipcRenderer.invoke('limb:entrarPorConvite', String(texto).slice(0, 2000)),
 };
 contextBridge.exposeInMainWorld('LimbNative', api);
-contextBridge.exposeInMainWorld('REANative', api); // servidores de antes do nome Limb (até 1.2) procuram este nome

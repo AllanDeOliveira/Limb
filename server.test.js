@@ -28,7 +28,7 @@ function subir(env = {}, { ipc = false } = {}) {
 }
 before(async () => { B = await subir({ ICE_SERVERS: '[{"urls":"stun:exemplo:3478"}]' }); });
 after(async () => {
-  // quem já saiu (o teste do banco antigo reinicia um servidor) não emite mais "exit"
+  // quem já saiu não emite mais "exit"
   await Promise.all(outros.filter((p) => p.exitCode === null && p.signalCode === null)
     .map((p) => { const saiu = new Promise((r) => p.once('exit', r)); p.kill(); return saiu; }));
   rmSync(dir, { recursive: true, force: true }); // Windows não apaga o banco enquanto o processo o mantém aberto
@@ -365,57 +365,6 @@ test('cadastro com nome ocupado conta como erro do IP; atrás de proxy, o IP é 
   for (let i = 0; i < 10; i++) assert.equal(await cadastrar(`1.2.3.${i}, 10.0.0.5`), 409);
   assert.equal(await cadastrar('9.9.9.9, 10.0.0.5', 'outro.nome'), 429);
   assert.equal(await cadastrar('10.0.0.6'), 409); // outro IP segue livre
-});
-
-test('banco antigo: token e senha de antes continuam valendo; conta sem senha pede o convite', async () => {
-  const { DatabaseSync } = await import('node:sqlite');
-  const { randomBytes, scryptSync } = await import('node:crypto');
-  const arq = path.join(dir, 'antigo.sqlite');
-  // esquema e formatos da versão anterior: token fixo em texto puro, senha 'sal:hash' com o scrypt padrão do Node
-  const velho = new DatabaseSync(arq);
-  velho.exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, token TEXT UNIQUE NOT NULL, senha TEXT)');
-  const sal = randomBytes(16);
-  const inserir = velho.prepare('INSERT INTO users VALUES (?, ?, ?, ?)');
-  inserir.run(1000n << 22n, 'velho', 'token-antigo', `${sal.toString('hex')}:${scryptSync('senha6', sal, 32).toString('hex')}`);
-  inserir.run(1001n << 22n, 'semsenha', 'token-sem-senha', null);
-  velho.close();
-
-  const V = await subir({ DB_FILE: arq, INVITE_CODE: 'amigos' });
-  const G = await identify('token-antigo', V);
-  assert.equal(G.ev.find((p) => p.t === 'READY')?.d.user.username, 'velho'); // ninguém precisa entrar de novo
-  G.ws.close(1000);
-  const [s, sessoes] = await api('GET', '/users/@me/sessions', null, 'token-antigo', V);
-  assert.equal(s, 200);
-  assert.equal(sessoes[0].dispositivo, 'Sessão anterior');
-  const [s1, novo] = await api('POST', '/login', { username: 'velho', password: 'senha6' }, null, V); // senha de 6 ainda entra
-  assert.equal(s1, 200);
-  assert.notEqual(novo.token, 'token-antigo');
-
-  // no banco: hash da senha refeito no formato novo; o token de verdade não fica em lugar nenhum
-  const leitura = new DatabaseSync(arq, { readOnly: true });
-  const linha = leitura.prepare("SELECT senha, token FROM users WHERE name = 'velho'").get();
-  const hashes = leitura.prepare('SELECT token_hash FROM sessions').all().map((x) => x.token_hash);
-  leitura.close();
-  assert.match(linha.senha, /^scrypt\$32768\$8\$1\$[0-9a-f]{32}\$[0-9a-f]{64}$/);
-  assert.notEqual(linha.token, 'token-antigo');
-  assert.ok(hashes.length >= 3 && hashes.every((x) => /^[0-9a-f]{64}$/.test(x)));
-  assert.equal((await api('POST', '/login', { username: 'velho', password: 'senha6' }, null, V))[0], 200);
-  assert.equal((await api('POST', '/login', { username: 'velho', password: 'senha7' }, null, V))[0], 401);
-
-  // conta sem senha: com convite no servidor, só reivindica quem tem o código
-  const [s2, r2] = await api('POST', '/login', { username: 'semsenha', password: 'nova-senha-boa' }, null, V);
-  assert.equal(s2, 403);
-  assert.equal(r2.convite, true);
-  assert.equal((await api('POST', '/login', { username: 'semsenha', password: 'nova-senha-boa', invite: 'amigos' }, null, V))[0], 200);
-  assert.equal((await api('POST', '/login', { username: 'semsenha', password: 'nova-senha-boa' }, null, V))[0], 200);
-
-  // reiniciar não roda a migração de novo: o token antigo segue valendo
-  const p = outros.at(-1);
-  await new Promise((r) => { p.once('exit', r); p.kill(); });
-  const V2 = await subir({ DB_FILE: arq, INVITE_CODE: 'amigos' });
-  assert.equal((await api('GET', '/users/@me/sessions', null, 'token-antigo', V2))[0], 200);
-  assert.equal((await api('GET', '/users/@me/sessions', null, 'token-sem-senha', V2))[0], 200);
-  assert.equal((await api('POST', '/login', { username: 'velho', password: 'senha6' }, null, V2))[0], 200);
 });
 
 test('página de convite: nome e código escapados, prévia (og:) e cabeçalhos; sem caixa de código; o modelo cru não sai', async () => {

@@ -11,8 +11,8 @@ const tsOf = (id) => new Date(Number((BigInt(id) >> 22n) + EPOCH)); // a data es
 const maior = (a, b) => BigInt(a) > BigInt(b);
 const byId = (a, b) => (maior(b.id, a.id) ? -1 : 1);
 const $ = (s) => document.querySelector(s);
-// ponte nativa do app desktop (undefined no navegador); REANative = apps de antes do nome Limb
-const ponte = () => window.LimbNative ?? window.REANative;
+// ponte nativa do app desktop (undefined no navegador)
+const ponte = () => window.LimbNative;
 const EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
 
 const store = {
@@ -1237,11 +1237,7 @@ function sessaoTerminou() {
 }
 
 // Tela de entrar: "Entrar" (conta existente) ou "Criar conta", como no Discord
-let modoLogin = 'entrar', conviteNoServidor = false, conviteContaAntiga = false, nomeServidor = '', colarAberto = false, primeiraConta = false, semDono = false;
-// Conta de antes das senhas: o convite só vai no login depois que o servidor disse que ESTE nome é uma delas
-// (como na 1.7: errar o próprio nome e cair na conta antiga de outra pessoa não pode tomar a conta dela)
-let contaAntigaNome = '';
-const nomeDigitado = () => loginForm.username.value.trim().toLowerCase();
+let modoLogin = 'entrar', conviteNoServidor = false, nomeServidor = '', colarAberto = false, primeiraConta = false, semDono = false;
 // Servidor sem contas aberto de fora (quem hospeda testando o próprio link .ts.net): diz onde criar a conta do dono
 const semConviteAviso = () => (semDono
   ? 'Servidor novo: crie a primeira conta no app do Limb de quem hospeda, ou abra o link de convite (Servidor → Copiar convite).'
@@ -1272,21 +1268,20 @@ function conviteValido(c) {
   return v && v.length <= 100 && !/[\u0000-\u001f\u007f]/.test(v) ? v : null;
 }
 // Com convite: "✓ Você foi convidado para …". Sem, num servidor que pede: o aviso e o "Tenho um link de convite"
-// (que abre o campo para colar). Na conta de antes das senhas, o mesmo campo confirma que a conta é sua.
+// (que abre o campo para colar). Entrar numa conta que já existe não pede convite.
 function mostrarConvite() {
-  const criar = modoLogin === 'criar', precisa = criar ? conviteNoServidor : conviteContaAntiga;
+  const criar = modoLogin === 'criar', precisa = criar && conviteNoServidor;
   // servidor sem contas: a primeira é a do dono e não precisa de convite
   const dono = criar && primeiraConta;
-  $('#conviteOk').hidden = !dono && (!convite || !(criar || conviteContaAntiga));
+  $('#conviteOk').hidden = !dono && (!convite || !criar);
   if (dono) trocar($('#conviteOk'), 'Este servidor ainda não tem contas: a primeira é a sua, de dono.');
   else trocar($('#conviteOk'), '✓ Você foi convidado para ', h('b', { textContent: nomeServidor || 'este servidor' }));
   $('#semConvite').hidden = !!convite || !precisa;
-  $('#semConviteTexto').textContent = criar ? semConviteAviso()
-    : 'Esta conta é de antes das senhas: para criar a senha dela, cole o link de convite do servidor.';
+  $('#semConviteTexto').textContent = semConviteAviso();
   $('#tenhoLink').hidden = colarAberto;
   $('#colarCampo').hidden = !colarAberto;
   // sem convite, criar conta só daria erro: o botão volta quando o convite chegar
-  $('#loginBotao').hidden = criar && precisa && !convite;
+  $('#loginBotao').hidden = precisa && !convite;
 }
 $('#tenhoLink').addEventListener('click', () => { colarAberto = true; mostrarConvite(); $('#colarConvite').focus(); });
 function usarColado(colado) {
@@ -1348,11 +1343,7 @@ function mostrarSenha(ver) {
 }
 $('#mostrarSenha').addEventListener('click', (e) => mostrarSenha(e.currentTarget.getAttribute('aria-pressed') !== 'true'));
 loginForm.password.addEventListener('input', atualizarRegras);
-loginForm.username.addEventListener('input', () => {
-  atualizarRegras();
-  // trocou o nome: o aviso da conta antiga era de outro nome
-  if (conviteContaAntiga && nomeDigitado() !== contaAntigaNome) { conviteContaAntiga = false; contaAntigaNome = ''; mostrarConvite(); }
-});
+loginForm.username.addEventListener('input', atualizarRegras);
 avisarCaps([loginForm.password, loginForm.confirmar], $('#capsAviso'));
 $('#trocaModo').addEventListener('click', () => { definirModo(modoLogin === 'criar' ? 'entrar' : 'criar'); loginForm.username.focus(); });
 loginForm.addEventListener('submit', async (e) => {
@@ -1364,8 +1355,7 @@ loginForm.addEventListener('submit', async (e) => {
   if (botao.hidden) { erro.textContent = semConviteAviso(); return; }
   botao.disabled = true;
   botao.textContent = criar ? 'Criando conta…' : 'Entrando…';
-  // No login, o convite só vai para reivindicar a conta de antes das senhas que o servidor apontou (2º clique)
-  const enviado = convite && (criar || (conviteContaAntiga && nomeDigitado() === contaAntigaNome)) ? convite : '';
+  const enviado = criar ? convite : ''; // o convite só serve para criar conta
   try {
     // fetch direto: o 401 de senha errada não é sessão terminada
     const r = await fetch(`/api/${criar ? 'register' : 'login'}`, {
@@ -1374,24 +1364,19 @@ loginForm.addEventListener('submit', async (e) => {
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) {
-      if (d.convite) {
-        primeiraConta = false; // pediu convite: o servidor já tem dono
+      if (d.convite) { // criar conta pediu convite
+        primeiraConta = false; // o servidor já tem dono
+        conviteNoServidor = true;
         // convite recusado: o guardado não vale mais (link antigo, "Gerar link novo"); volta o jeito de colar outro
         if (enviado) { conviteRecusado.set(enviado); if (enviado === convite) guardarConvite(''); }
-        if (criar) conviteNoServidor = true;
-        else { conviteContaAntiga = true; contaAntigaNome = nomeDigitado(); }
         mostrarConvite();
         if (!$('#tenhoLink').hidden) $('#tenhoLink').focus();
         if (enviado) throw new Error('Este convite não vale mais. Peça um link novo para quem hospeda.');
-        // conta antiga e o convite já está aqui: quem reivindica é o segundo clique, de propósito
-        if (!criar && convite) throw new Error('Esta conta é de antes das senhas. Se ela é sua, clique em Entrar de novo: esta senha passa a ser a dela.');
-        throw new Error(d.message || `Erro ${r.status}`);
       }
       throw new Error(d.message || `Erro ${r.status}`);
     }
     if (convite) guardarConvite(''); // já tem conta: não fica guardado à toa
-    primeiraConta = semDono = conviteContaAntiga = false;
-    contaAntigaNome = '';
+    primeiraConta = semDono = false;
     entrar(d.token);
   } catch (err) {
     erro.textContent = err instanceof TypeError ? 'Não foi possível falar com o servidor. Confira a conexão e tente de novo.' : err.message;

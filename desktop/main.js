@@ -5,7 +5,7 @@ import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, 
 import * as tailscale from './tailscale.js';
 import { iniciarAtualizacao } from './atualizacao.js';
 import { ehTailscale, gerarCodigo, lerConvite, lerConviteCopiado, lerDeepLink, linkConvite, mensagemConvite } from './convite.js';
-import { appendFileSync, cpSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { networkInterfaces, userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,18 +15,6 @@ const raiz = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const dados = app.getPath('userData');
 const arqConfig = path.join(dados, 'settings.json');
 
-// O app se chamava "REA Discord": na primeira abertura como Limb, traz configurações, banco e login salvo
-// de %APPDATA%\REA Discord (sem os caches do Chromium). A pasta antiga fica intacta.
-const pastaAntiga = path.join(app.getPath('appData'), 'REA Discord');
-if (!existsSync(arqConfig) && existsSync(path.join(pastaAntiga, 'settings.json'))) {
-  try {
-    cpSync(pastaAntiga, dados, { recursive: true, force: false, filter: (f) => !/[\\/](\w*Cache|Code Cache|Crashpad)([\\/]|$)/.test(f) });
-    for (const ext of ['', '-wal', '-shm']) {
-      const velho = path.join(dados, `discord.db${ext}`);
-      if (existsSync(velho) && !existsSync(path.join(dados, `limb.db${ext}`))) renameSync(velho, path.join(dados, `limb.db${ext}`));
-    }
-  } catch (e) { console.error('migração da pasta antiga falhou:', e); }
-}
 const arqJanela = path.join(dados, 'janela.json');
 
 // Registro em %APPDATA%\Limb\limb.log: no computador de um amigo é o único jeito de saber o que deu errado.
