@@ -21,6 +21,8 @@ const HEARTBEAT = 13750;
 const TOKEN_TTL = 30_000;
 const MAX_POR_SALA = 8; // ponytail: malha P2P = n² conexões; acima disso precisa de SFU
 
+// iceServers: lista fixa, ou função chamada a cada READY (credenciais de TURN vencem) que devolve a lista
+// ou uma Promise dela
 export function criarVoz({ broadcast, paraSessao, canalDeVoz, iceServers = [] }) {
   const estados = new Map(); // userId → voice state
   const tokens = new Map(); // token → { user_id, guild_id, channel_id, session_id, expira }
@@ -87,10 +89,28 @@ export function criarVoz({ broadcast, paraSessao, canalDeVoz, iceServers = [] })
   }
 
   function gatewayVoz(ws) {
-    let eu = null, timer;
+    let eu = null, entrando = false, timer;
     const vigiar = () => { clearTimeout(timer); timer = setTimeout(() => ws.close(4009, 'Session timed out'), HEARTBEAT * 1.5); };
     vigiar();
     enviar(ws, VOP.HELLO, { heartbeat_interval: HEARTBEAT, v: 8 });
+
+    // o token só vale enquanto a pessoa continua naquele canal, por aquela sessão (outra aba não "rouba" a vaga)
+    const vale = (t) => estados.get(t.user_id)?.channel_id === t.channel_id && estados.get(t.user_id)?.session_id === t.session_id;
+    // Entra na sala de uma vez só (sem await no meio): ninguém sinaliza para quem ainda não recebeu o READY
+    function entrar(t, ice) {
+      tirarDaSala(t.user_id, 4014);
+      const membros = sala(t.channel_id);
+      const outros = [...membros.keys()];
+      eu = { user_id: t.user_id, channel_id: t.channel_id, ssrc: randomInt(1, 2 ** 31) };
+      membros.set(eu.user_id, { ws, ssrc: eu.ssrc, espectadores: new Set() });
+      enviar(ws, VOP.READY, { ssrc: eu.ssrc, ip: '', port: 0, modes: ['webrtc-p2p'], heartbeat_interval: HEARTBEAT, ice_servers: Array.isArray(ice) ? ice : [] });
+      // quem já está transmitindo (e quem já assiste): chega antes da conexão, para a tela ser reconhecida ao chegar
+      for (const [uid, m] of membros) {
+        if (m.video) enviar(ws, VOP.VIDEO, { user_id: uid, stream_id: m.video, ...(m.espectadores.size && { viewer_ids: [...m.espectadores] }) });
+      }
+      enviar(ws, VOP.CLIENTS_CONNECT, { user_ids: outros });
+      naSala(eu.channel_id, VOP.CLIENTS_CONNECT, { user_ids: [eu.user_id] }, eu.user_id);
+    }
 
     ws.on('message', (raw) => {
       let p;
@@ -99,24 +119,23 @@ export function criarVoz({ broadcast, paraSessao, canalDeVoz, iceServers = [] })
       if (p.op === VOP.HEARTBEAT) { vigiar(); return enviar(ws, VOP.HEARTBEAT_ACK, { t: d.t }); }
 
       if (!eu) {
+        if (entrando) return; // esperando a lista de ICE: o cliente não manda nada antes do READY
         if (p.op !== VOP.IDENTIFY) return ws.close(4003, 'Not authenticated');
         const t = tokens.get(String(d.token));
         tokens.delete(String(d.token)); // uso único
         const ok = t && t.expira > Date.now() && t.user_id === String(d.user_id) && t.session_id === String(d.session_id)
-          && t.guild_id === String(d.server_id) && estados.get(t.user_id)?.channel_id === t.channel_id;
+          && t.guild_id === String(d.server_id) && vale(t);
         if (!ok) return ws.close(4004, 'Authentication failed');
-        tirarDaSala(t.user_id, 4014);
-        const membros = sala(t.channel_id);
-        const outros = [...membros.keys()];
-        eu = { user_id: t.user_id, channel_id: t.channel_id, ssrc: randomInt(1, 2 ** 31) };
-        membros.set(eu.user_id, { ws, ssrc: eu.ssrc, espectadores: new Set() });
-        enviar(ws, VOP.READY, { ssrc: eu.ssrc, ip: '', port: 0, modes: ['webrtc-p2p'], heartbeat_interval: HEARTBEAT, ice_servers: iceServers });
-        // quem já está transmitindo (e quem já assiste): chega antes da conexão, para a tela ser reconhecida ao chegar
-        for (const [uid, m] of membros) {
-          if (m.video) enviar(ws, VOP.VIDEO, { user_id: uid, stream_id: m.video, ...(m.espectadores.size && { viewer_ids: [...m.espectadores] }) });
-        }
-        enviar(ws, VOP.CLIENTS_CONNECT, { user_ids: outros });
-        naSala(eu.channel_id, VOP.CLIENTS_CONNECT, { user_ids: [eu.user_id] }, eu.user_id);
+        const ice = typeof iceServers === 'function' ? iceServers() : iceServers;
+        if (typeof ice?.then !== 'function') return entrar(t, ice);
+        // Lista ainda chegando (credenciais do TURN): enquanto isso o socket pode cair ou a pessoa trocar de canal
+        entrando = true;
+        Promise.resolve(ice).catch(() => []).then((lista) => {
+          entrando = false;
+          if (ws.readyState !== 1) return;
+          if (!vale(t)) return ws.close(4014, 'Disconnected');
+          entrar(t, lista);
+        });
         return;
       }
 

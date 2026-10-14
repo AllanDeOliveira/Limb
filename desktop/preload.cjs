@@ -14,6 +14,8 @@ const api = {
   servidores: () => ipcRenderer.invoke('limb:servidores'),
   hospedagem: () => ipcRenderer.invoke('limb:hospedagem'), // null = não está hospedando para amigos
   ligarTailscale: () => ipcRenderer.invoke('limb:ligarTailscale'),
+  ligarFunnel: () => ipcRenderer.invoke('limb:ligarFunnel'), // hospedando pela internet: publica de novo
+  convite: () => ipcRenderer.invoke('limb:convite'), // { link, mensagem } | null = não hospeda pela internet / fora do ar
   trocarServidor: (url) => ipcRenderer.invoke('limb:trocarServidor', url == null ? null : String(url)),
   entrarPorConvite: (texto) => ipcRenderer.invoke('limb:entrarPorConvite', String(texto).slice(0, 2000)),
 };

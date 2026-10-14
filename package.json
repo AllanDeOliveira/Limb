@@ -46,6 +46,14 @@
     "directories": {
       "output": "dist"
     },
+    "protocols": [
+      {
+        "name": "Limb",
+        "schemes": [
+          "limb"
+        ]
+      }
+    ],
     "win": {
       "artifactName": "Limb-${version}-${arch}.${ext}"
     },

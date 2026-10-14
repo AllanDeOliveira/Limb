@@ -12,4 +12,10 @@ contextBridge.exposeInMainWorld('conexao', {
   trocar: (url) => ipcRenderer.invoke('conexao:trocar', url == null ? null : String(url)), // null = este computador
   esquecer: (url) => ipcRenderer.invoke('conexao:esquecer', String(url)),
   iniciarComWindows: (ligado) => ipcRenderer.invoke('conexao:iniciarComWindows', !!ligado),
+  // publicar pela internet (Funnel): estado, ativar, e o painel da Cloudflare para a chave TURN
+  funnel: (porta) => ipcRenderer.invoke('conexao:funnel', Number(porta)),
+  funnelLigar: (porta) => ipcRenderer.invoke('conexao:funnelLigar', Number(porta)),
+  abrirCloudflare: () => ipcRenderer.invoke('conexao:abrirCloudflare'),
+  // "Gerar link novo": o código sai do app (main), que salva e avisa o servidor rodando → { codigo }
+  novoConvite: () => ipcRenderer.invoke('conexao:novoConvite'),
 });

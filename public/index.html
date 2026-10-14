@@ -231,6 +231,12 @@
   .nota:empty, .status:empty { position: absolute; }
   #loginAviso { background: var(--acc-suave); border-radius: 8px; padding: 8px 10px; color: var(--txt); font-weight: 600; }
   #loginAviso:empty { padding: 0; }
+  #conviteOk { font-weight: 600; }
+  #conviteOk b { color: var(--txt); overflow-wrap: anywhere; }
+  #semConvite { display: grid; gap: 8px; background: var(--bg1); border: 1px solid var(--linha); border-radius: 8px; padding: 10px 12px; }
+  #semConvite .dica { color: var(--txt); }
+  #login #semConvite button.link { justify-self: start; padding: 0; color: var(--acc-texto); text-decoration: none; font-weight: 600; }
+  #login #semConvite button.link:hover { text-decoration: underline; }
   .regras { list-style: none; margin: -6px 0 0; padding: 0; display: grid; gap: 2px; font-size: 13px; color: var(--mut); }
   .regras li::before { content: "○ "; content: "○ " / ""; }
   .regras li.ok { color: var(--ok); }
@@ -278,6 +284,11 @@
   #pessoaDlg { width: min(420px, calc(100vw - 32px)); }
   #audioDlg { width: min(880px, calc(100vw - 32px)); }
   #servDlg { width: min(480px, calc(100vw - 32px)); }
+  #convidarDlg { width: min(460px, calc(100vw - 32px)); }
+  #convidarLink { background: var(--bg0); border: 1px solid var(--linha); border-radius: 8px; padding: 9px 10px; font-weight: 400; width: 100%; }
+  #convidarLink:focus { border-color: var(--acc); outline: none; }
+  #convidarStatus { margin-top: 10px; }
+  #convidarStatus:empty { display: none; }
   #contaDlg { width: min(460px, calc(100vw - 32px)); }
   #contaDlg h4 { margin: 14px 0 0; font-size: 12px; color: var(--mut); text-transform: uppercase; letter-spacing: .04em; }
   #contaDlg h4:focus { outline: none; }
@@ -399,6 +410,15 @@
     </div>
     <div class="onde"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zM4 14h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2zM6 6h.01M6 18h.01"/></svg><span>Servidor: <b id="ondeServidor"></b></span></div>
     <p class="nota" id="loginAviso" role="status"></p>
+    <!-- o convite vem escondido no link (#convite=…): aqui só a confirmação, ou o jeito de colar o link -->
+    <p class="nota" id="conviteOk" role="status" hidden></p>
+    <div id="semConvite" hidden>
+      <p class="dica" id="semConviteTexto"></p>
+      <button type="button" class="link" id="tenhoLink">Tenho um link de convite</button>
+      <label id="colarCampo" hidden>Cole aqui o link de convite
+        <input id="colarConvite" autocomplete="off" spellcheck="false" maxlength="2000" aria-describedby="colarErro"></label>
+      <p class="error" id="colarErro" role="alert"></p>
+    </div>
     <label>Nome de usuário <input name="username" autocomplete="username" required minlength="2" maxlength="32" pattern="[a-zA-Z0-9_.]+" title="Letras, números, ponto e sublinhado"></label>
     <div class="campo">
       <label for="loginSenha">Senha</label>
@@ -417,9 +437,8 @@
     </ul>
     <label id="confirmarCampo" hidden>Confirmar senha <input name="confirmar" type="password" autocomplete="new-password" maxlength="128" disabled></label>
     <p class="nota" id="capsAviso" role="status"></p>
-    <label id="conviteCampo" hidden>Código de convite <small id="conviteDica">este servidor pede um código para criar conta</small><input name="invite" autocomplete="off" maxlength="100" disabled></label>
     <button class="principal" id="loginBotao">Entrar</button>
-    <div class="error" role="alert"></div>
+    <div class="error" id="loginErro" role="alert"></div>
     <p class="troca"><span id="trocaTexto">Precisa de uma conta?</span> <button type="button" class="link" id="trocaModo">Registre-se</button></p>
     <button type="button" class="link" id="trocarServidor" hidden>Conectar a outro servidor…</button>
   </form>
@@ -485,10 +504,21 @@
     <ul class="servlista" id="servLista"></ul>
     <div class="campos">
       <label>Entrar no servidor de um amigo
-        <textarea id="servConvite" rows="3" placeholder="Cole aqui o convite que ele mandou: o Limb acha o endereço e o código sozinho."></textarea></label>
+        <textarea id="servConvite" rows="3" placeholder="Cole aqui o link de convite que ele mandou (pode ser a mensagem inteira)."></textarea></label>
     </div>
     <p class="error" id="servErro" role="status"></p>
     <menu><button type="button" id="servMais">Hospedar e mais opções…</button><button value="cancel" formnovalidate>Fechar</button><button type="button" class="ok" id="servEntrar">Entrar</button></menu>
+  </form>
+</dialog>
+<dialog id="convidarDlg" aria-labelledby="convidarTitulo" aria-describedby="convidarDica">
+  <form method="dialog">
+    <h3 id="convidarTitulo">Convidar amigos</h3>
+    <div class="campos">
+      <label>Link do convite <input type="text" id="convidarLink" readonly spellcheck="false"></label>
+      <p class="dica" id="convidarDica">Seu amigo abre o link: entra pelo navegador ou baixa o app.</p>
+    </div>
+    <p class="status" id="convidarStatus" role="status"></p>
+    <menu><button value="cancel" formnovalidate>Fechar</button><button type="button" class="ok" id="convidarCopiar">Copiar convite</button></menu>
   </form>
 </dialog>
 <dialog id="audioDlg" aria-labelledby="audioTitulo">

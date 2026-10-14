@@ -406,6 +406,7 @@ const ICONES = {
   marca: 'M8 3v18M8 15c0-4 3-6.5 8.5-7.5M16.5 7.5 14.5 4M16.5 7.5l3.5.5',
   ajustes: 'M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6',
   conta: 'M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2M12 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0-8 0',
+  convidar: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 7m-4 0a4 4 0 1 0 8 0a4 4 0 1 0-8 0M19 8v6M22 11h-6',
 };
 function icone(nomeIcone, tam = 20) {
   const SVG = 'http://www.w3.org/2000/svg';
@@ -609,7 +610,7 @@ async function abrirServidores() {
 }
 $('#servEntrar').addEventListener('click', async (e) => {
   const texto = $('#servConvite').value.trim();
-  if (!texto) { $('#servErro').textContent = 'Cole o convite que seu amigo mandou.'; $('#servConvite').focus(); return; }
+  if (!texto) { $('#servErro').textContent = 'Cole o link de convite que seu amigo mandou.'; $('#servConvite').focus(); return; }
   e.target.disabled = true; $('#servErro').textContent = 'Testando a conexão…';
   const r = await ponte().entrarPorConvite(texto);
   e.target.disabled = false;
@@ -617,23 +618,68 @@ $('#servEntrar').addEventListener('click', async (e) => {
 });
 $('#servMais').addEventListener('click', () => { servDlg.close(); ponte()?.abrirConexao(); });
 
-// Hospedando com o Tailscale desligado: faixa no topo, porque quem hospeda não percebe que ninguém entra
+// Hospedando com o Tailscale (ou a publicação pela internet) desligado: faixa no topo, porque quem hospeda
+// não percebe que ninguém entra. App desktop antigo não manda internet/publicado: só a parte do Tailscale.
+let faixaFunnel = false; // o botão da faixa publica de novo (em vez de ligar o Tailscale)
 async function checarHospedagem() {
   const d = await ponte()?.hospedagem?.().catch(() => null);
   const faixa = $('#alertaHost');
-  faixa.hidden = !d || d.ligado;
-  if (d && !d.ligado) faixa.querySelector('span').textContent = d.instalado
-    ? 'Seus amigos não conseguem entrar: o Tailscale está desligado neste computador.'
-    : 'Seus amigos não conseguem entrar: o Tailscale não está instalado neste computador.';
+  faixaFunnel = !!d?.ligado && !!d.internet && d.publicado === false && !!ponte()?.ligarFunnel;
+  faixa.hidden = !d || (d.ligado && !faixaFunnel);
+  if (faixa.hidden) return;
+  faixa.querySelector('button').textContent = faixaFunnel ? 'Publicar agora' : 'Ligar o Tailscale';
+  faixa.querySelector('span').textContent = faixaFunnel
+    ? 'Seus amigos não conseguem entrar: a publicação pela internet (Funnel) está desligada.'
+    : d.instalado
+      ? 'Seus amigos não conseguem entrar: o Tailscale está desligado neste computador.'
+      : 'Seus amigos não conseguem entrar: o Tailscale não está instalado neste computador.';
 }
 $('#alertaHost button').addEventListener('click', async (e) => {
   e.target.disabled = true;
-  const r = await ponte()?.ligarTailscale();
+  const r = await (faixaFunnel ? ponte()?.ligarFunnel() : ponte()?.ligarTailscale())?.catch(() => null);
   e.target.disabled = false;
-  if (r?.erro) $('#alertaHost span').textContent = r.erro;
-  setTimeout(checarHospedagem, 2000);
+  if (r?.autorizar) $('#alertaHost span').textContent = 'Autorize no navegador: abrimos a página do Tailscale. Clique em Enable e volte aqui.';
+  else if (r?.erro) $('#alertaHost span').textContent = r.erro;
+  // a autorização pode levar um tempo: confere de novo daqui a pouco (a consulta normal é a cada 20 s)
+  setTimeout(checarHospedagem, r?.autorizar ? 10_000 : 2000);
+  setTimeout(checarConvite, r?.autorizar ? 10_000 : 2000);
 });
 if (ponte()?.hospedagem) { checarHospedagem(); setInterval(checarHospedagem, 20_000); }
+
+// ── Convidar amigos (app desktop, hospedando pela internet) ─────────────────
+// O link só existe com a publicação no ar; no navegador e em app antigo (sem `convite` na ponte), não aparece.
+const convidarDlg = $('#convidarDlg');
+let mensagemConvite = '';
+const botaoConvidar = botaoIcone('convidar', 'Convidar amigos', { hidden: true, onclick: abrirConvite });
+$('#abrirBusca').before(botaoConvidar);
+async function checarConvite() {
+  const c = await ponte()?.convite?.().catch(() => null);
+  botaoConvidar.hidden = !c?.link;
+  return c?.link ? c : null;
+}
+async function abrirConvite() {
+  const c = await checarConvite();
+  if (!c) return;
+  mensagemConvite = c.mensagem || c.link;
+  $('#convidarLink').value = c.link;
+  $('#convidarStatus').textContent = '';
+  $('#convidarStatus').className = 'status';
+  convidarDlg.showModal();
+  $('#convidarLink').select();
+}
+$('#convidarCopiar').addEventListener('click', async () => {
+  const status = $('#convidarStatus');
+  try {
+    await navigator.clipboard.writeText(mensagemConvite);
+    status.className = 'status ok';
+    status.textContent = 'Convite copiado! Cole no WhatsApp ou no Discord do seu amigo.';
+  } catch {
+    $('#convidarLink').select(); // sem permissão para copiar: deixa o link selecionado para o Ctrl+C
+    status.className = 'status erro';
+    status.textContent = 'Não consegui copiar sozinho: o link está selecionado, use Ctrl+C.';
+  }
+});
+if (ponte()?.convite) { checarConvite(); setInterval(checarConvite, 20_000); }
 
 // ── Voz e áudio ─────────────────────────────────────────────────────────────
 // Ajustes valem na hora (sem "salvar") e ficam guardados neste computador.
@@ -1174,12 +1220,77 @@ function sessaoTerminou() {
 }
 
 // Tela de entrar: "Entrar" (conta existente) ou "Criar conta", como no Discord
-let modoLogin = 'entrar', conviteNoServidor = false, conviteContaAntiga = false;
-function mostrarConvite(sim, dica = 'este servidor pede um código para criar conta') {
-  $('#conviteCampo').hidden = !sim;
-  loginForm.invite.disabled = !sim;
-  $('#conviteDica').textContent = dica;
+let modoLogin = 'entrar', conviteNoServidor = false, conviteContaAntiga = false, nomeServidor = '', colarAberto = false, primeiraConta = false;
+
+// Como no Discord, o link é o convite: o código vem escondido nele (/#convite=<código>) e ninguém vê nem
+// digita. Fica guardado neste navegador (o localStorage já é separado por servidor) para sobreviver a
+// recarregar a página ou trocar entre Entrar e Criar conta.
+const conviteSalvo = { get: () => { try { return localStorage.getItem('convite') ?? ''; } catch { return ''; } },
+  set: (v) => { try { v ? localStorage.setItem('convite', v) : localStorage.removeItem('convite'); } catch {} } };
+let convite = conviteSalvo.get();
+const guardarConvite = (c) => { convite = c; conviteSalvo.set(c); };
+// Link colado: …/convite/<código>, …/#convite=<código>, limb://entrar?…&convite=<código> ou a mensagem inteira
+// do convite; em último caso, o código sozinho. null = não achei convite nenhum.
+function lerLinkConvite(texto) {
+  const t = String(texto ?? '').trim().slice(0, 2000);
+  const decodificar = (s) => { try { return decodeURIComponent(s); } catch { return null; } };
+  // parênteses fora, como no lerConvite do app: na mensagem do convite, o link vem antes de "(Abre no navegador…)"
+  const m = /\/convite\/([^\s/?#<>"'()]+)/i.exec(t) ?? /[#?&]convite=([^\s&#<>"'()]+)/i.exec(t);
+  // "…/convite/abc." no fim da frase, ou com o negrito do WhatsApp: a pontuação não faz parte do código
+  const c = m ? decodificar(m[1].replace(/[.,;:!?*_~]+$/, '')) : /^[^\s/:]{1,100}$/.test(t) ? t : null;
+  return conviteValido(c);
 }
+function conviteValido(c) {
+  const v = typeof c === 'string' ? c.trim() : '';
+  return v && v.length <= 100 && !/[\u0000-\u001f\u007f]/.test(v) ? v : null;
+}
+// Com convite: "✓ Você foi convidado para …". Sem, num servidor que pede: o aviso e o "Tenho um link de convite"
+// (que abre o campo para colar). Na conta de antes das senhas, o mesmo campo confirma que a conta é sua.
+function mostrarConvite() {
+  const criar = modoLogin === 'criar', precisa = criar ? conviteNoServidor : conviteContaAntiga;
+  // servidor sem contas: a primeira é a do dono e não precisa de convite
+  const dono = criar && primeiraConta;
+  $('#conviteOk').hidden = !dono && (!convite || !(criar || conviteContaAntiga));
+  if (dono) trocar($('#conviteOk'), 'Este servidor ainda não tem contas: a primeira é a sua, de dono.');
+  else trocar($('#conviteOk'), '✓ Você foi convidado para ', h('b', { textContent: nomeServidor || 'este servidor' }));
+  $('#semConvite').hidden = !!convite || !precisa;
+  $('#semConviteTexto').textContent = criar ? 'Este servidor só aceita convidados. Peça o link de convite para quem hospeda.'
+    : 'Esta conta é de antes das senhas: para criar a senha dela, cole o link de convite do servidor.';
+  $('#tenhoLink').hidden = colarAberto;
+  $('#colarCampo').hidden = !colarAberto;
+  // sem convite, criar conta só daria erro: o botão volta quando o convite chegar
+  $('#loginBotao').hidden = criar && precisa && !convite;
+}
+$('#tenhoLink').addEventListener('click', () => { colarAberto = true; mostrarConvite(); $('#colarConvite').focus(); });
+function usarColado(colado) {
+  const campo = $('#colarConvite'), texto = (colado ?? campo.value).trim();
+  if (!texto) { $('#colarErro').textContent = ''; return; }
+  const c = lerLinkConvite(texto);
+  if (!c) { $('#colarErro').textContent = 'Não achei um convite aí. Cole o link inteiro que mandaram para você.'; return; }
+  guardarConvite(c);
+  colarAberto = false;
+  campo.value = '';
+  $('#colarErro').textContent = '';
+  $('#loginErro').textContent = '';
+  mostrarConvite();
+  // o campo sumiu: o foco vai para o próximo passo, e não para o nada
+  (modoLogin === 'criar' && !loginForm.username.value ? loginForm.username : $('#loginBotao')).focus();
+}
+// Colou: confere na hora, com o texto da área de transferência (o campo de uma linha só junta as linhas da
+// mensagem: "…/convite/abc" + "(Abre no navegador…)"). Digitando à mão (o código sozinho), só no Enter ou ao sair.
+$('#colarConvite').addEventListener('paste', (e) => {
+  const texto = e.clipboardData?.getData('text');
+  if (!texto) return; // sem acesso ao texto: o 'input' abaixo confere o que entrou no campo
+  e.preventDefault();
+  $('#colarConvite').value = texto.replace(/\s+/g, ' ').trim().slice(0, 2000); // se não achar, a pessoa vê o que colou
+  usarColado(texto);
+});
+$('#colarConvite').addEventListener('input', (e) => {
+  if (/^insertFrom(Paste|Drop)/.test(e.inputType ?? '')) usarColado();
+  else $('#colarErro').textContent = '';
+});
+$('#colarConvite').addEventListener('change', () => usarColado());
+$('#colarConvite').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); usarColado(); } });
 function definirModo(modo) {
   modoLogin = modo;
   const criar = modo === 'criar', f = loginForm;
@@ -1194,9 +1305,8 @@ function definirModo(modo) {
   f.confirmar.disabled = !criar; // desabilitado não trava o envio por "required" escondido
   f.confirmar.required = criar;
   $('#regrasSenha').hidden = !criar;
-  if (criar) mostrarConvite(conviteNoServidor);
-  else mostrarConvite(conviteContaAntiga, 'esta conta é de antes das senhas: o código confirma que ela é sua');
-  $('#login .error').textContent = '';
+  mostrarConvite();
+  $('#loginErro').textContent = '';
   atualizarRegras();
 }
 // Regras da senha nova ao vivo (a lista de senhas comuns fica só no servidor)
@@ -1216,22 +1326,34 @@ avisarCaps([loginForm.password, loginForm.confirmar], $('#capsAviso'));
 $('#trocaModo').addEventListener('click', () => { definirModo(modoLogin === 'criar' ? 'entrar' : 'criar'); loginForm.username.focus(); });
 loginForm.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const f = loginForm, erro = $('#login .error'), botao = $('#loginBotao'), criar = modoLogin === 'criar';
+  const f = loginForm, erro = $('#loginErro'), botao = $('#loginBotao'), criar = modoLogin === 'criar';
   erro.textContent = '';
   if (criar && f.password.value !== f.confirmar.value) { erro.textContent = 'As senhas não são iguais.'; f.confirmar.focus(); return; }
+  // Enter num campo com o botão escondido (servidor só de convidados, sem convite): nem tenta
+  if (botao.hidden) { erro.textContent = 'Este servidor só aceita convidados. Peça o link de convite para quem hospeda.'; return; }
   botao.disabled = true;
   botao.textContent = criar ? 'Criando conta…' : 'Entrando…';
+  const enviado = convite;
   try {
-    // fetch direto: o 401 de senha errada não é sessão terminada
+    // fetch direto: o 401 de senha errada não é sessão terminada. O convite vai também no login: é o que
+    // deixa uma conta de antes das senhas criar a dela (nas outras, o servidor nem olha)
     const r = await fetch(`/api/${criar ? 'register' : 'login'}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: f.username.value, password: f.password.value, invite: f.invite.disabled ? undefined : f.invite.value || undefined }),
+      body: JSON.stringify({ username: f.username.value, password: f.password.value, invite: enviado || undefined }),
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) {
-      if (d.convite && !criar) { conviteContaAntiga = true; definirModo('entrar'); f.invite.focus(); }
+      if (d.convite) {
+        // convite recusado: o guardado não vale mais (link antigo, "Gerar link novo"); volta o jeito de colar outro
+        if (enviado && enviado === convite) guardarConvite('');
+        if (criar) conviteNoServidor = true; else conviteContaAntiga = true;
+        mostrarConvite();
+        if (!$('#tenhoLink').hidden) $('#tenhoLink').focus();
+        throw new Error(enviado ? 'Este convite não vale mais. Peça um link novo para quem hospeda.' : d.message || `Erro ${r.status}`);
+      }
       throw new Error(d.message || `Erro ${r.status}`);
     }
+    if (enviado) guardarConvite(''); // já serviu: não fica guardado à toa
     entrar(d.token);
   } catch (err) {
     erro.textContent = err instanceof TypeError ? 'Não foi possível falar com o servidor. Confira a conexão e tente de novo.' : err.message;
@@ -1242,16 +1364,25 @@ loginForm.addEventListener('submit', async (e) => {
 });
 // Diz onde a conta vai ser criada: no app desktop, o servidor embutido é "este computador"
 $('#ondeServidor').textContent = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) ? 'este computador' : location.host;
-// Convite colado no app desktop chega como #convite=…: preenche o campo e tira do endereço
+// O convite chega como #convite=… (o "Entrar pelo navegador" da página de convite, o app desktop do amigo e o
+// de quem hospeda): guarda e tira do endereço
 const conviteUrl = /[#&]convite=([^&]+)/.exec(location.hash)?.[1];
 if (conviteUrl) {
-  loginForm.invite.value = decodeURIComponent(conviteUrl);
+  let c = null;
+  try { c = conviteValido(decodeURIComponent(conviteUrl)); } catch { /* %E0%A4 cortado: ignora */ }
+  if (c) guardarConvite(c);
   history.replaceState(null, '', location.pathname + location.search);
 }
 // Quem chegou por convite e nunca entrou aqui quer criar conta; o resto, entrar
 definirModo(conviteUrl && !jaEntrou.get() ? 'criar' : 'entrar');
-// Servidor com código de convite: mostra o campo ao criar conta
-fetch('/api/info').then((r) => r.json()).then((i) => { conviteNoServidor = !!i.convite; if (modoLogin === 'criar') mostrarConvite(conviteNoServidor); }).catch(() => {});
+// Se o servidor só aceita convidados, e o nome dele para o "✓ Você foi convidado para …"
+fetch('/api/info').then((r) => r.json()).then((i) => {
+  conviteNoServidor = !!i.convite;
+  primeiraConta = i.primeiraConta === true;
+  nomeServidor = typeof i.nome === 'string' ? i.nome.slice(0, 60) : '';
+  if (primeiraConta && !salvo.get()) definirModo('criar'); // servidor novo: o dono chega para criar a conta
+  mostrarConvite();
+}).catch(() => {});
 // App desktop: trocar de servidor (hospedar aqui ou entrar no de um amigo)
 if (ponte()?.abrirConexao) {
   $('#trocarServidor').hidden = false;

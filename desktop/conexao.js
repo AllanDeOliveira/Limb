@@ -1,6 +1,16 @@
-// Janela "Servidor": passo a passo para hospedar ou entrar no servidor de um amigo pelo Tailscale.
+// Janela "Servidor": passo a passo para hospedar (pela internet ou pelo Tailscale) ou entrar no servidor de um amigo.
 const $ = (id) => document.getElementById(id);
 let cfg = null, ips = [], ts = null, modo = null, lido = null, ultimoTeste = '';
+let como = 'internet'; // hospedando: 'internet' (Funnel, os amigos só abrem um link) ou 'tailscale' (cada amigo instala)
+let funnel = null, acaoFunnel = null; // estado do Funnel; acaoFunnel: 'ativando' | 'autorizar' | { erro }
+let doClipboard = false; // o convite veio do que a pessoa tinha copiado (primeira vez)
+let trocandoToken = false, removerTurn = false;
+let codigoConvite = ''; // o código vai escondido no link; quem gera é o app (main), nunca esta janela
+let mensagem = ''; // o convite pronto para colar no WhatsApp (o "Copiar convite" copia isto)
+
+const mostrarErro = (t) => { $('erro').hidden = !t; $('erro').textContent = t ?? ''; if (t) $('erro').scrollIntoView({ block: 'nearest' }); };
+// Só reescreve o que mudou: as consultas de 3 s não repetem o status no leitor de tela nem desfazem uma seleção
+const escrever = (el, t) => { if (el.textContent !== t) el.textContent = t; };
 
 // ── Tailscale ────────────────────────────────────────────────────────────────
 const ESTADOS = {
@@ -22,6 +32,7 @@ async function atualizarTs() {
   $('tsBotao').textContent = botao ?? '';
   if (ts.nome) $('meuNome').textContent = ts.nome;
   atualizarConvite();
+  desenharFunnel();
   // acabou de conectar: refaz o teste que tinha falhado por causa do Tailscale
   if (antes && antes !== 'Running' && ts.estado === 'Running' && modo === 'entrar') testar(true);
 }
@@ -36,6 +47,22 @@ $('tsBotao').addEventListener('click', async () => {
 });
 setInterval(atualizarTs, 3000);
 
+// Endereço da rede do Tailscale (100.64.0.0/10), igual a ehTailscale em desktop/convite.js
+function ehTailscale(url) {
+  try {
+    const [a, b] = new URL(url).hostname.split('.').map(Number);
+    return a === 100 && b >= 64 && b <= 127;
+  } catch { return false; }
+}
+// O status do Tailscale fica no passo 1 do "Hospedar". No "Entrar", só aparece para convite 100.x:
+// pelo link da internet o amigo não precisa de Tailscale nenhum.
+function lugarDoTs() {
+  const precisa = modo === 'entrar' && !!lido && ehTailscale(lido.url);
+  $('entrarTs').hidden = $('entrarAceite').hidden = !precisa;
+  const lugar = precisa ? $('tsLugarEntrar') : $('tsLugarHospedar');
+  if ($('ts').parentElement !== lugar) lugar.append($('ts'));
+}
+
 // ── Modo ─────────────────────────────────────────────────────────────────────
 function escolher(m) {
   modo = m;
@@ -43,62 +70,216 @@ function escolher(m) {
   $('hospedar').hidden = m !== 'hospedar';
   $('entrar').hidden = m !== 'entrar';
   if (m === 'hospedar') {
-    $('compartilhar').checked = true;
-    if (!$('codigo').value) $('codigo').value = gerarCodigo(); // sem código, qualquer um que alcance o PC cria conta
-    atualizarConvite();
+    // sem código, qualquer um que alcance o PC cria conta. Só com a configuração lida: antes dela, "sem código"
+    // pode ser só "ainda não sei", e gerar um derrubaria o link que os amigos já têm
+    if (cfg && !codigoConvite) gerarLink();
+    escolherComo(como);
   }
   if (m === 'entrar') { $('colar').focus(); lerColado(); }
+  lugarDoTs();
   atualizarBotao();
 }
 for (const b of document.querySelectorAll('.modo')) b.addEventListener('click', () => escolher(b.dataset.modo));
 
-function gerarCodigo() {
-  const letras = 'abcdefghjkmnpqrstuvwxyz23456789';
-  return Array.from(crypto.getRandomValues(new Uint8Array(6)), (n) => letras[n % letras.length]).join('');
+// Como os amigos entram. Pelo Tailscale eles chegam pela rede: o servidor precisa aceitar conexões de fora.
+// Pela internet o Funnel entrega tudo localmente, e fechado para a rede é mais seguro.
+function escolherComo(c, porClique = false) {
+  como = c;
+  for (const r of document.querySelectorAll('input[name=como]')) r.checked = r.value === c;
+  for (const li of document.querySelectorAll('[data-como]')) li.hidden = li.dataset.como !== c;
+  if (c === 'tailscale') $('compartilhar').checked = true;
+  else if (porClique) $('compartilhar').checked = false;
+  $('tsDica').textContent = c === 'internet'
+    ? 'Só você precisa dele: seus amigos não instalam nada. Grátis.'
+    : 'O Tailscale liga você e seus amigos com segurança, sem mexer no roteador. Grátis.';
+  atualizarFirewall();
+  atualizarConvite();
+  desenharFunnel();
+  atualizarFunnel();
 }
+for (const r of document.querySelectorAll('input[name=como]')) r.addEventListener('change', () => escolherComo(r.value, true));
+// Só aceitando conexões da rede o Windows pergunta sobre o firewall
+function atualizarFirewall() { $('dicaFirewall').hidden = !$('compartilhar').checked; }
+$('compartilhar').addEventListener('change', atualizarFirewall);
 
 // ── Hospedar ─────────────────────────────────────────────────────────────────
 function endereco() {
   const ip = ts?.estado === 'Running' ? ts.ip : ips[0]?.endereco;
   return ip ? `http://${ip}:${$('porta').value}` : null;
 }
+// O convite é só o link (o código vai dentro dele): pela internet, o https://….ts.net/convite/…; pelo Tailscale,
+// o http://100.x:porta/convite/…, que o amigo cola na janela Servidor dele (ou abre no navegador)
 function atualizarConvite() {
   if (modo !== 'hospedar') return;
-  const end = endereco();
-  const codigo = $('codigo').value.trim();
-  $('convite').textContent = end
-    ? ['Bora conversar no Limb! 🎧', `Endereço: ${end}`, codigo && `Código de convite: ${codigo}`,
-      ts?.estado === 'Running' ? 'Antes, aceite o link do Tailscale que eu te mandei.' : null].filter(Boolean).join('\n')
-    : 'Ligue o Tailscale (passo 1) para gerar o convite.';
-  $('copiar').disabled = !end;
   $('enderecos').textContent = ips.length ? `Endereços na rede local: ${ips.map((i) => `${i.endereco} (${i.nome})`).join(', ')}` : '';
-  if (ts?.estado !== 'Running' && end) $('convite').textContent += '\n\n⚠ Sem Tailscale, esse endereço só funciona na mesma rede (mesma casa).';
+  let link = null, aviso = '';
+  if (como === 'internet') {
+    const origem = funnel?.publicado ? funnel.url : ts?.dns ? `https://${ts.dns}` : null;
+    if (origem && codigoConvite) link = `${origem}/convite/${encodeURIComponent(codigoConvite)}`;
+    // mesmo texto de mensagemConvite em desktop/convite.js
+    mensagem = link ? `Bora conversar no Limb! 🎧\nEntra por aqui: ${link}\n(Abre no navegador ou baixa o app. Não precisa de Tailscale.)` : '';
+    if (!origem) aviso = 'Ligue o Tailscale (passo 1) para gerar o link.';
+    else if (!funnel?.publicado) aviso = '⚠ O link só funciona depois de publicar na internet (passo 2).';
+  } else {
+    const end = endereco();
+    if (end && codigoConvite) link = `${end}/convite/${encodeURIComponent(codigoConvite)}`;
+    mensagem = link ? ['Bora conversar no Limb! 🎧', `Abre no app: ${link}`,
+      ts?.estado === 'Running' && '(Antes, aceite o link do Tailscale que eu te mandei.)'].filter(Boolean).join('\n') : '';
+    if (!end) aviso = 'Ligue o Tailscale (passo 1) para gerar o link.';
+    else if (ts?.estado !== 'Running') aviso = '⚠ Sem Tailscale, esse endereço só funciona na mesma rede (mesma casa).';
+  }
+  if (!codigoConvite) aviso = 'Gerando o link…';
+  if ($('linkConvite').value !== (link ?? '')) $('linkConvite').value = link ?? '';
+  escrever($('conviteAviso'), aviso);
+  $('copiar').disabled = !link;
 }
-for (const id of ['codigo', 'porta']) $(id).addEventListener('input', atualizarConvite);
+$('porta').addEventListener('input', () => { atualizarConvite(); atualizarFunnel(); });
 $('abrirShare').addEventListener('click', () => window.conexao.abrirCompartilhar());
+$('linkConvite').addEventListener('focus', () => $('linkConvite').select());
 $('copiar').addEventListener('click', async () => {
-  await window.conexao.copiar($('convite').textContent.split('\n\n⚠')[0]);
+  await window.conexao.copiar(mensagem);
   $('copiado').textContent = '✔ copiado! Cole no WhatsApp/Discord do seu amigo.';
   setTimeout(() => { $('copiado').textContent = ''; }, 4000);
 });
+// Link novo: o código é gerado no app (main), salvo e passado na hora para o servidor que está rodando.
+// Os links antigos param de criar conta; quem já tem conta continua entrando normalmente.
+let gerando = null; // um pedido por vez: escolher "Hospedar" duas vezes não gera dois links
+function gerarLink() {
+  gerando ??= (async () => {
+    $('novoLink').disabled = true;
+    const r = await window.conexao.novoConvite().catch(() => null);
+    $('novoLink').disabled = false;
+    if (!r?.codigo) return mostrarErro('Não foi possível gerar o link. Tente de novo.');
+    codigoConvite = r.codigo;
+    atualizarConvite();
+  })().finally(() => { gerando = null; });
+  return gerando;
+}
+$('novoLink').addEventListener('click', async () => {
+  if (!confirm('Os links antigos param de funcionar. Gerar um link novo?')) return;
+  await gerarLink();
+  if (!codigoConvite) return;
+  $('copiado').textContent = '✔ Link novo pronto. Mande para quem você quer convidar.';
+  setTimeout(() => { $('copiado').textContent = ''; }, 4000);
+});
+
+// ── Publicar na internet (Funnel) ────────────────────────────────────────────
+const internetVisivel = () => modo === 'hospedar' && como === 'internet';
+async function atualizarFunnel() {
+  if (!internetVisivel()) return;
+  const porta = $('porta').value;
+  const f = await window.conexao.funnel(porta);
+  if (porta !== $('porta').value) return; // mudou a porta durante a consulta: a próxima vale
+  funnel = f;
+  if (f?.publicado && acaoFunnel !== 'ativando') acaoFunnel = null;
+  desenharFunnel();
+  atualizarConvite();
+}
+function desenharFunnel() {
+  if (!internetVisivel()) return;
+  let cls = 'aviso', t, botao = null;
+  if (ts && ts.estado !== 'Running') t = 'Primeiro ligue o Tailscale (passo 1).';
+  else if (acaoFunnel === 'ativando') { t = 'Ativando…'; botao = 'Ativando…'; }
+  else if (funnel?.publicado) { cls = 'ok'; t = `No ar: ${funnel.url}`; }
+  else if (acaoFunnel === 'autorizar') { t = 'Autorize no navegador: abrimos a página do Tailscale. Clique em Enable e volte aqui.'; botao = 'Abrir a página de novo'; }
+  else if (acaoFunnel?.erro) { cls = 'ruim'; t = acaoFunnel.erro; botao = 'Tentar de novo'; }
+  else if (!funnel) t = 'Verificando…';
+  else if (funnel.ativo) {
+    t = funnel.porta ? `Publicado, mas na porta ${funnel.porta}, e o Limb vai usar a ${$('porta').value}. Clique em Ativar para corrigir.`
+      : 'Publicado, mas apontando para outro programa. Clique em Ativar para apontar para o Limb.';
+    botao = 'Ativar';
+  }
+  else { t = 'Ainda não está na internet.'; botao = 'Ativar'; }
+  $('funnel').className = `ts ${cls}`;
+  escrever($('funnelTexto'), t);
+  $('funnelBotao').hidden = !botao;
+  escrever($('funnelBotao'), botao ?? '');
+  $('funnelBotao').disabled = acaoFunnel === 'ativando';
+}
+$('funnelBotao').addEventListener('click', async () => {
+  acaoFunnel = 'ativando';
+  desenharFunnel();
+  const r = await window.conexao.funnelLigar($('porta').value);
+  acaoFunnel = r?.autorizar ? 'autorizar' : r?.erro ? { erro: r.erro } : null;
+  desenharFunnel();
+  atualizarFunnel();
+});
+setInterval(atualizarFunnel, 3000);
+
+// ── Voz pelo 4G: TURN da Cloudflare ──────────────────────────────────────────
+// Depois de salvo, o token não volta para a tela: só "Token salvo (termina em …abcd)", com trocar e remover
+function desenharTurn() {
+  const salvo = !!cfg.turnCloudflare?.tokenSalvo && !trocandoToken && !removerTurn;
+  $('turnSalvo').hidden = !salvo;
+  $('turnCampoToken').hidden = salvo;
+  $('turnFim').textContent = cfg.turnCloudflare?.fimDoToken ? `(termina em …${cfg.turnCloudflare.fimDoToken})` : '';
+}
+$('abrirCloudflare').addEventListener('click', () => window.conexao.abrirCloudflare());
+$('turnTrocar').addEventListener('click', () => { trocandoToken = true; desenharTurn(); $('turnToken').focus(); });
+$('turnRemover').addEventListener('click', () => {
+  removerTurn = true;
+  $('turnId').value = '';
+  $('turnToken').value = '';
+  desenharTurn();
+  $('turnStatus').textContent = 'A chave sai quando você salvar.';
+  $('turnId').focus();
+});
+// digitou uma chave nova depois de "Remover": vale a nova
+for (const id of ['turnId', 'turnToken']) $(id).addEventListener('input', () => {
+  if (!removerTurn || !$(id).value) return;
+  removerTurn = false;
+  trocandoToken = true;
+  $('turnStatus').textContent = '';
+});
 
 // ── Entrar ───────────────────────────────────────────────────────────────────
-// Aceita a mensagem inteira do convite, só a URL, ou só "100.x.x.x:3000"
-function lerColado() {
-  const t = $('colar').value;
-  let url = /https?:\/\/[^\s<>"'()]+/.exec(t)?.[0];
-  if (!url) {
-    const m = /\b(\d{1,3}(?:\.\d{1,3}){3})(?::(\d{2,5}))?\b/.exec(t);
-    if (m) url = `http://${m[1]}:${m[2] ?? 3000}`;
+// Cópia de lerConvite/lerDeepLink de desktop/convite.js (esta janela não importa módulos): mudou lá, mude aqui.
+// Aceita o link https://host/convite/<código>, um limb://entrar, a mensagem inteira do convite antigo,
+// só a URL, ou só "100.x.x.x:3000".
+const semPontuacaoFinal = (s) => s.replace(/[.,;:!?*_~]+$/, '');
+const decodificar = (s) => { try { return decodeURIComponent(s); } catch { return null; } };
+const codigoValido = (c) => typeof c === 'string' && c.length <= 100 && !/[\u0000-\u001f\u007f]/.test(c);
+function lerDeepLink(texto) {
+  const t = String(texto ?? '').trim();
+  if (t.length > 2000) return null;
+  let u;
+  try { u = new URL(t); } catch { return null; }
+  if (u.protocol !== 'limb:' || u.hostname !== 'entrar' || !['', '/'].includes(u.pathname) || u.username || u.password) return null;
+  const servidor = u.searchParams.get('servidor'), codigo = u.searchParams.get('convite') ?? '';
+  if (!servidor || !codigoValido(codigo)) return null;
+  let s;
+  try { s = new URL(servidor); } catch { return null; }
+  if (!/^https?:$/.test(s.protocol) || s.username || s.password || s.pathname !== '/' || s.search || s.hash) return null;
+  return { url: s.origin, codigo };
+}
+function lerConvite(texto) {
+  const t = String(texto ?? '').slice(0, 2000);
+  const deep = /limb:\/\/\S+/i.exec(t);
+  if (deep) { const d = lerDeepLink(semPontuacaoFinal(deep[0])); if (d) return d; }
+  const urls = (t.match(/https?:\/\/[^\s<>"'()]+/gi) ?? []).map(semPontuacaoFinal);
+  let bruto = urls.find((x) => /^https?:\/\/[^/]+\/convite\/[^/?#]+/i.test(x)) ?? urls[0];
+  if (!bruto) {
+    const tsnet = /\b((?:[a-z0-9-]+\.)+ts\.net)(\/convite\/[^\s<>"'()]+)?/i.exec(t);
+    if (tsnet) bruto = semPontuacaoFinal(`https://${tsnet[1]}${tsnet[2] ?? ''}`);
+    else { const m = /\b(\d{1,3}(?:\.\d{1,3}){3})(?::(\d{2,5}))?\b/.exec(t); if (m) bruto = `http://${m[1]}:${m[2] ?? 3000}`; }
   }
-  try { url = url && new URL(url).origin; } catch { url = null; }
-  const codigo = /c[óo]digo[^:\n]*:\s*(\S+)/i.exec(t)?.[1] ?? '';
-  lido = url ? { url, codigo } : null;
-  $('lidoEndereco').textContent = url ?? '—';
-  $('lidoCodigo').textContent = codigo || '—';
-  $('testar').disabled = !url;
+  let u;
+  try { u = new URL(bruto); } catch { return null; }
+  let codigo = null;
+  const caminho = /^\/convite\/([^/]+)\/?$/.exec(u.pathname);
+  if (caminho) codigo = decodificar(caminho[1]);
+  if (codigo == null) { const h = /[#&]convite=([^&]+)/.exec(u.hash); if (h) codigo = decodificar(h[1]); }
+  if (codigo == null) codigo = /c[óo]digo[^:\n]*:\s*(\S+)/i.exec(t)?.[1] ?? '';
+  return { url: u.origin, codigo: codigoValido(codigo) ? codigo : '' };
+}
+function lerColado() {
+  lido = lerConvite($('colar').value);
+  $('lidoEndereco').textContent = lido?.url ?? '—';
+  $('lidoConvite').textContent = lido?.codigo ? ' · com convite' : '';
+  $('testar').disabled = !lido;
+  lugarDoTs();
   atualizarBotao();
-  if (url) testar();
+  if (lido) testar();
   else { $('resultado').textContent = ''; ultimoTeste = ''; }
 }
 async function testar(forcar = false) {
@@ -106,32 +287,42 @@ async function testar(forcar = false) {
   ultimoTeste = lido.url;
   $('resultado').className = '';
   $('resultado').textContent = 'Testando a conexão…';
+  $('salvar').textContent = 'Salvar e entrar';
   const r = await window.conexao.testar(lido.url);
   if (lido?.url !== ultimoTeste) return; // colou outra coisa enquanto testava
+  const nome = r.nome || new URL(lido.url).host;
   $('resultado').className = r.ok ? 'bom' : 'ruim';
-  $('resultado').textContent = r.ok ? '✔ Encontrei o servidor do seu amigo! Clique em “Salvar e reiniciar”.' : `✖ ${r.erro}`;
-  $('salvar').textContent = r.ok ? 'Salvar e reiniciar' : 'Salvar mesmo assim';
+  $('resultado').textContent = !r.ok ? `✖ ${r.erro}`
+    : doClipboard ? `✔ Encontramos o convite que você copiou: ${nome} — clique em “Salvar e entrar”.`
+    : `✔ Encontrei o servidor ${nome}! Clique em “Salvar e entrar”.`;
+  $('salvar').textContent = r.ok ? 'Salvar e entrar' : 'Salvar mesmo assim';
 }
 let espera;
-$('colar').addEventListener('input', () => { clearTimeout(espera); espera = setTimeout(lerColado, 400); });
+$('colar').addEventListener('input', () => { doClipboard = false; clearTimeout(espera); espera = setTimeout(lerColado, 400); });
 $('testar').addEventListener('click', () => testar(true));
 
 // ── Salvar ───────────────────────────────────────────────────────────────────
 function atualizarBotao() {
   $('salvar').disabled = !modo || (modo === 'entrar' && !lido);
   if (modo !== 'entrar') $('salvar').textContent = 'Salvar e reiniciar';
+  else if ($('salvar').textContent === 'Salvar e reiniciar') $('salvar').textContent = 'Salvar e entrar';
 }
 $('cancelar').addEventListener('click', () => window.close());
 $('salvar').addEventListener('click', async () => {
+  $('salvar').disabled = true; // salvar pode levar uns segundos (tira o Funnel do ar, testa o servidor)
   const r = await window.conexao.salvar({
     modo,
     compartilharNaRede: $('compartilhar').checked,
     porta: Number($('porta').value),
-    codigoConvite: $('codigo').value.trim(),
     endpoint: lido?.url ?? '',
     conviteRecebido: lido?.codigo ?? '',
+    internet: como === 'internet',
+    nomeServidor: $('nomeServidor').value.trim(),
+    turnKeyId: $('turnId').value.trim(),
+    turnToken: $('turnToken').value.trim(),
+    turnRemover: removerTurn,
   });
-  if (r?.erro) { $('erro').hidden = false; $('erro').textContent = r.erro; }
+  if (r?.erro) { mostrarErro(r.erro); atualizarBotao(); }
 });
 
 // ── Seus servidores (histórico) ──────────────────────────────────────────────
@@ -152,7 +343,7 @@ function desenharLista(historico, atual) {
     if (eAtual) li.append(Object.assign(document.createElement('span'), { className: 'tag', textContent: 'ATUAL' }));
     else {
       const entrar = Object.assign(document.createElement('button'), { type: 'button', className: 'ok', textContent: 'Entrar' });
-      entrar.addEventListener('click', async () => { entrar.disabled = true; entrar.textContent = 'Reiniciando…'; const r = await window.conexao.trocar(h.url); if (r?.erro) { entrar.disabled = false; entrar.textContent = 'Entrar'; $('erro').hidden = false; $('erro').textContent = r.erro; } });
+      entrar.addEventListener('click', async () => { entrar.disabled = true; entrar.textContent = 'Reiniciando…'; const r = await window.conexao.trocar(h.url); if (r?.erro) { entrar.disabled = false; entrar.textContent = 'Entrar'; mostrarErro(r.erro); } });
       li.append(entrar);
     }
     if (h.url && !eAtual) {
@@ -170,21 +361,35 @@ function desenharLista(historico, atual) {
 // ── Início ───────────────────────────────────────────────────────────────────
 window.conexao.ler().then((d) => {
   ({ config: cfg, ips } = d);
-  if (d.erro) { $('erro').hidden = false; $('erro').textContent = d.erro; }
+  if (d.erro) mostrarErro(d.erro);
   if (d.primeiraVez) {
     $('titulo').textContent = 'Bem-vindo ao Limb! 👋';
     $('subtitulo').textContent = 'Para conversar com amigos, um de vocês hospeda e os outros entram. Você pode mudar isso depois em “servidor”.';
   }
   $('portatil').hidden = !d.portatil;
   $('porta').value = cfg.porta;
-  $('codigo').value = cfg.codigoConvite ?? '';
+  codigoConvite = cfg.codigoConvite ?? '';
+  $('nomeServidor').value = cfg.nomeServidor ?? '';
+  $('nomeServidor').placeholder = d.nomePadrao ?? '';
+  $('turnId').value = cfg.turnCloudflare?.keyId ?? '';
+  desenharTurn();
   $('compartilhar').checked = !!cfg.compartilharNaRede;
   $('iniciarComWindows').checked = !!cfg.iniciarComWindows;
   $('campoIniciar').hidden = !d.podeIniciarComWindows;
   $('iniciarComWindows').addEventListener('change', (e) => window.conexao.iniciarComWindows(e.target.checked));
+  // quem já hospedava pelo Tailscale continua nele; o resto começa pela internet (recomendado)
+  como = cfg.internet || !cfg.compartilharNaRede ? 'internet' : 'tailscale';
   desenharLista(cfg.historico ?? [], cfg.endpoint ?? null);
-  if (cfg.endpoint) $('colar').value = [cfg.endpoint, cfg.conviteRecebido && `Código: ${cfg.conviteRecebido}`].filter(Boolean).join('\n');
+  // o convite volta como link (o código vai dentro dele, como no que o amigo mandou)
+  const comoLink = (url, c) => (c ? `${url}/convite/${encodeURIComponent(c)}` : url);
+  if (cfg.endpoint) $('colar').value = comoLink(cfg.endpoint, cfg.conviteRecebido);
+  else if (d.colado) {
+    // primeira vez com um convite copiado: já vem preenchido e testado
+    $('colar').value = comoLink(d.colado.url, d.colado.codigo);
+    doClipboard = true;
+  }
   atualizarTs();
-  if (cfg.endpoint) escolher('entrar');
-  else if (cfg.compartilharNaRede) escolher('hospedar');
+  if (cfg.endpoint || d.colado) escolher('entrar');
+  else if (cfg.compartilharNaRede || cfg.internet) escolher('hospedar');
+  if (modo === 'hospedar' && !codigoConvite) gerarLink(); // clicou em "Hospedar" antes de a configuração chegar
 });

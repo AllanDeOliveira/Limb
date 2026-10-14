@@ -3,7 +3,9 @@
 // HELLO(10) → IDENTIFY(2) → DISPATCH(0) READY; HEARTBEAT(1) ↔ HEARTBEAT_ACK(11);
 // reconexão: RESUME(6) {token, session_id, seq} → eventos perdidos + RESUMED, ou INVALID_SESSION(9).
 import http from 'node:http';
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { isIP } from 'node:net';
 import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import path from 'node:path';
@@ -24,6 +26,10 @@ const REPLAY_MAX = 1000; // eventos guardados por sessão para reenviar no RESUM
 const MAX_REACOES = 20; // emojis distintos por mensagem (limite do Discord)
 const SESSAO_TTL = 30 * 86_400_000; // sessão de login expira depois de 30 dias sem uso
 const MAX_SESSOES = 50; // por conta: logins além disso derrubam os mais antigos
+// package.json vai junto no app empacotado: a página de convite aponta para o instalador desta mesma versão
+const VERSAO = (() => { try { return String(JSON.parse(readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf8')).version ?? ''); } catch { return ''; } })();
+// Nome que aparece no convite ("Você foi convidado para…"); Array.from não corta um emoji ao meio
+const NOME_SERVIDOR = Array.from(String(process.env.SERVER_NAME ?? '').replace(/\s+/g, ' ').trim()).slice(0, 60).join('').trim() || 'Limb';
 
 // ── Banco ───────────────────────────────────────────────────────────────────
 // ids são snowflakes (INTEGER 64 bits) → readBigInts, e viram string no JSON, como na API do Discord
@@ -163,7 +169,7 @@ const presence = (user, status) => broadcast('PRESENCE_UPDATE', { user, status }
 
 const voz = criarVoz({
   broadcast,
-  iceServers: lerIce(),
+  iceServers: iceAtual, // a cada READY: as credenciais do TURN vencem
   paraSessao: dispatch,
   canalDeVoz: (id) => /^\d{1,20}$/.test(id) && q('SELECT * FROM channels WHERE id = ? AND type = ?').get(BigInt(id), CANAL.VOZ),
 });
@@ -283,7 +289,18 @@ function minhaMensagem(cid, mid, user) {
 }
 
 // ── Contas ──────────────────────────────────────────────────────────────────
-const CONVITE = process.env.INVITE_CODE || ''; // vazio = qualquer um que alcance o servidor cria conta
+// O código vai escondido dentro do link (/convite/<código>, #convite=<código>): ninguém digita, mas ele
+// continua sendo a tranca de quem cria conta num servidor que agora pode estar na internet.
+// Vazio = qualquer um que alcance o servidor cria conta.
+let codigoConvite = process.env.INVITE_CODE || '';
+// "Gerar link novo" no app desktop (utilityProcess) manda { convite: '<código novo>' }: vale na hora, sem
+// reiniciar. Contas e sessões continuam; só os links antigos param de criar conta. Outras mensagens não são para cá.
+function receberDoApp(m) {
+  const novo = typeof m?.convite === 'string' ? m.convite.trim() : '';
+  if (novo && novo.length <= 100 && !/[\u0000-\u001f\u007f]/.test(novo)) codigoConvite = novo;
+}
+if (process.parentPort) process.parentPort.on('message', (e) => receberDoApp(e.data));
+else if (process.send) process.on('message', receberDoApp); // child_process.fork com IPC (testes): a mesma mensagem
 const scryptP = promisify(scrypt);
 // O custo vai junto do hash ('scrypt$N$r$p$sal$hash'): dá para subir o custo um dia sem invalidar as senhas.
 // N=2^15 usa 32 MiB por conferência, exatamente o maxmem padrão do Node: por isso o maxmem maior.
@@ -323,10 +340,21 @@ function nomeDe(v) {
 }
 // digests de tamanho fixo: timingSafeEqual exige o mesmo tamanho, e o tempo não entrega o código
 const digest = (s) => createHash('sha256').update(String(s ?? '')).digest();
-const conviteOk = (v) => timingSafeEqual(digest(String(v ?? '').trim()), digest(CONVITE));
+const conviteOk = (v) => timingSafeEqual(digest(String(v ?? '').trim()), digest(codigoConvite));
+const CONVITE_VENCIDO = 'Este convite não vale mais. Peça um link novo para quem hospeda.';
+const semContas = () => !q('SELECT 1 FROM users LIMIT 1').get();
 // atrás de um proxy (Caddy/nginx com HTTPS), o IP real é o último do X-Forwarded-For: é o que o nosso proxy
-// acrescentou (os anteriores vêm do cliente e podem ser inventados para fugir dos limites por IP)
-const ipDe = (req) => (process.env.TRUST_PROXY && String(req.headers['x-forwarded-for'] ?? '').split(',').at(-1).trim()) || req.socket.remoteAddress;
+// acrescentou (os anteriores vêm do cliente e podem ser inventados para fugir dos limites por IP).
+// Proxy nesta mesma máquina (Tailscale Funnel, Caddy local) conecta pelo loopback: aí vale sem TRUST_PROXY.
+// Sem isso, todo visitante do Funnel seria 127.0.0.1, e as senhas erradas de um bloqueariam todo mundo.
+// Quem fala direto com o servidor pela rede não é loopback, então não consegue inventar o próprio IP.
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+function ipDe(req) {
+  const socket = req.socket.remoteAddress;
+  if (!process.env.TRUST_PROXY && !LOOPBACK.has(socket)) return socket;
+  const ultimo = String(req.headers['x-forwarded-for'] ?? '').split(',').at(-1).trim();
+  return isIP(ultimo) ? ultimo : socket; // sem cabeçalho (o app de quem hospeda) ou com lixo: o do socket
+}
 
 // ponytail: limites em memória; somem ao reiniciar o servidor
 const esperaDe = (ms) => (ms >= 60_000 ? `${Math.ceil(ms / 60_000)} min` : `${Math.ceil(ms / 1000)} s`);
@@ -424,14 +452,101 @@ setInterval(faxina, 15 * 60_000).unref();
 
 // STUN/TURN entregues ao cliente no READY da voz. Entre redes diferentes, STUN resolve a maioria
 // dos casos; redes muito restritas precisam de um TURN (ex.: coturn) — ver README.
+const STUN_GOOGLE = 'stun:stun.l.google.com:19302';
 function lerIce() {
-  try { if (process.env.ICE_SERVERS) return JSON.parse(process.env.ICE_SERVERS); } catch { console.error('ICE_SERVERS inválido, usando o padrão'); }
-  return [{ urls: 'stun:stun.l.google.com:19302' }];
+  try {
+    if (process.env.ICE_SERVERS) {
+      const lista = JSON.parse(process.env.ICE_SERVERS);
+      if (Array.isArray(lista)) return lista;
+      throw new Error('não é uma lista');
+    }
+  } catch { console.error('ICE_SERVERS inválido, usando o padrão'); }
+  return [{ urls: STUN_GOOGLE }];
+}
+const ICE_FIXO = lerIce();
+
+// TURN da Cloudflare (Realtime TURN): quem está no 4G ou atrás de CGNAT não fecha conexão direta só com STUN,
+// e a mídia passa por lá. As credenciais duram TURN_TTL; a chave da API (token) nunca sai deste processo.
+const CF = process.env.CF_TURN_KEY_ID && process.env.CF_TURN_API_TOKEN ? {
+  id: process.env.CF_TURN_KEY_ID, token: process.env.CF_TURN_API_TOKEN,
+  api: (process.env.CF_TURN_API_URL || 'https://rtc.live.cloudflare.com/v1').replace(/\/+$/, ''), // CF_TURN_API_URL: só nos testes
+} : null;
+const TURN_TTL = 86_400; // s
+const TURN_RENOVAR = 2 * 3_600_000; // renova quando faltam 2 h: chamada em andamento segue com a credencial antiga
+const turn = { lista: null, vence: 0, buscando: null, espera: 60_000, proxima: 0, falhando: false, timer: null };
+
+// Só o que o RTCPeerConnection aceita: uma entrada malformada faria o navegador recusar a lista inteira.
+// Porta 53: Chrome e Firefox bloqueiam (porta "proibida") e a Cloudflare manda uma URL nela.
+function iceValido(lista) {
+  if (!Array.isArray(lista)) return [];
+  return lista.slice(0, 10).flatMap((s) => {
+    const urls = [s?.urls].flat().filter((u) => typeof u === 'string' && /^(stuns?|turns?):\S{1,250}$/.test(u) && !/:53(\?|$)/.test(u));
+    if (!urls.length) return [];
+    if (typeof s.username === 'string' && typeof s.credential === 'string') return [{ urls, username: s.username, credential: s.credential }];
+    return urls.some((u) => u.startsWith('turn')) ? [] : [{ urls }]; // TURN sem credencial não serve
+  });
+}
+const temStun = (lista) => lista.some((s) => [s.urls].flat().some((u) => /^stuns?:/.test(u)));
+
+function agendarTurn(ms) {
+  clearTimeout(turn.timer);
+  turn.timer = setTimeout(buscarTurn, ms).unref();
+}
+// Uma busca por vez; falhou: avisa uma vez só (sem o token), segue com a lista fixa e tenta de novo
+// em 1 min, 2, 4… até 30 min
+function buscarTurn() {
+  turn.buscando ??= pedirTurn().finally(() => { turn.buscando = null; });
+  return turn.buscando;
+}
+async function pedirTurn() {
+  try {
+    const r = await fetch(`${CF.api}/turn/keys/${encodeURIComponent(CF.id)}/credentials/generate-ice-servers`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${CF.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ttl: TURN_TTL }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!r.ok) r.body?.cancel().catch(() => {}); // libera a conexão
+    if (!r.ok) throw new Error(`HTTP ${r.status}${[401, 403, 404].includes(r.status) ? ': confira o ID e o token da chave TURN' : ''}`);
+    const lista = iceValido((await r.json())?.iceServers);
+    if (!lista.length) throw new Error('resposta sem iceServers');
+    Object.assign(turn, { lista, vence: Date.now() + TURN_TTL * 1000, espera: 60_000, proxima: 0 });
+    if (turn.falhando) console.log('TURN da Cloudflare funcionando de novo');
+    turn.falhando = false;
+    agendarTurn(TURN_TTL * 1000 - TURN_RENOVAR);
+  } catch (e) {
+    const motivo = e.name === 'TimeoutError' ? 'sem resposta em 10 s' : `${e.message}${e.cause?.code ? ` ${e.cause.code}` : ''}`;
+    if (!turn.falhando) console.error(`TURN da Cloudflare indisponível (${motivo}); a voz segue só com STUN e o Limb tenta de novo sozinho.`);
+    turn.falhando = true;
+    turn.proxima = Date.now() + turn.espera;
+    agendarTurn(turn.espera);
+    turn.espera = Math.min(turn.espera * 2, 30 * 60_000);
+  }
 }
 
+// Lista do READY da voz: credenciais da Cloudflare + a lista fixa (sem o STUN do Google, se a Cloudflare já
+// manda um). Sem credencial válida e com uma busca em andamento (logo depois de subir), espera até 2 s por ela.
+function iceAtual() {
+  if (!CF) return ICE_FIXO;
+  const montar = () => {
+    if (!turn.lista || turn.vence <= Date.now()) return ICE_FIXO;
+    const fixos = temStun(turn.lista) ? ICE_FIXO.filter((s) => [s?.urls].flat().join() !== STUN_GOOGLE) : ICE_FIXO;
+    return [...turn.lista, ...fixos];
+  };
+  // o timer pode atrasar (PC que hibernou): renova aqui também, sem esperar
+  const restante = turn.vence - Date.now();
+  if (!turn.buscando && restante < TURN_RENOVAR && Date.now() >= turn.proxima) buscarTurn();
+  if (restante > 0 || !turn.buscando) return montar();
+  let timer;
+  const limite = new Promise((r) => { timer = setTimeout(r, 2000); });
+  return Promise.race([turn.buscando, limite]).then(() => { clearTimeout(timer); return montar(); });
+}
+if (CF) buscarTurn(); // em segundo plano: o primeiro READY já costuma encontrar as credenciais
+
 const rotas = [
-  // O que a tela de login precisa saber antes de entrar
-  ['GET', /^\/api\/info$/, () => ({ convite: !!CONVITE }), { publica: true }],
+  // O que a tela de login (e o "Testar" do app desktop) precisa saber antes de entrar
+  // primeiraConta: servidor sem ninguém ainda. A primeira conta (a do dono) não precisa de convite.
+  ['GET', /^\/api\/info$/, () => ({ convite: !!codigoConvite && !semContas(), primeiraConta: semContas(), nome: NOME_SERVIDOR, versao: VERSAO }), { publica: true }],
 
   // Entrar numa conta que já existe; cada login é uma sessão nova (um token por dispositivo).
   // Nome desconhecido e senha errada dão a mesma resposta, no mesmo tempo: não dá para descobrir quem tem conta.
@@ -446,8 +561,9 @@ const rotas = [
       // Conta de antes das senhas: o primeiro login define a senha. Com convite no servidor, só quem tem o código
       // reivindica a conta. Sem convite, qualquer um que alcança o servidor já cria conta: exigir mais só
       // trancaria o dono de fora.
-      if (CONVITE && !conviteOk(req.body.invite)) {
-        throw new HttpError(403, 'Esta conta é de antes das senhas. Para criar a senha dela, digite também o código de convite do servidor.', { convite: true });
+      if (codigoConvite && !conviteOk(req.body.invite)) {
+        throw new HttpError(403, req.body.invite ? CONVITE_VENCIDO
+          : 'Esta conta é de antes das senhas. Para criar a senha dela, cole também o link de convite do servidor.', { convite: true });
       }
       const hash = await gerarHash(senhaNova(senha, name)); // senha fraca (400) não zera os contadores de erro
       acertou(ip, name);
@@ -464,12 +580,15 @@ const rotas = [
     return { token: criarSessao(u.id, req), user: { id: u.id, username: u.name } };
   }, { publica: true }],
 
-  // Criar conta (com código de convite, se o servidor exigir). Já entra: devolve o token da primeira sessão.
+  // Criar conta (com o código do link de convite, se o servidor exigir). Já entra: devolve o token da primeira sessão.
   ['POST', /^\/api\/register$/, async (req) => {
     const ip = ipDe(req);
     bloqueado(ip);
     const name = nomeDe(req.body.username);
-    if (CONVITE && !conviteOk(req.body.invite)) { falhou(ip); throw new HttpError(403, 'Código de convite inválido'); }
+    // A primeira conta do servidor é a do dono: entra sem convite (quem hospeda não precisa de link para si mesmo)
+    const convidado = !codigoConvite || conviteOk(req.body.invite);
+    const semConvite = () => new HttpError(403, req.body.invite ? CONVITE_VENCIDO : 'Este servidor só aceita convidados. Peça o link de convite para quem hospeda.', { convite: true });
+    if (!convidado && !semContas()) { falhou(ip); throw semConvite(); }
     const senha = senhaNova(String(req.body.password ?? ''), name);
     const emUso = () => q('SELECT 1 FROM users WHERE name = ?').get(name);
     // antes do scrypt: nome ocupado não gasta CPU, e conta como erro (senão dá para repetir sem limite)
@@ -478,6 +597,8 @@ const rotas = [
     const hash = await gerarHash(senha);
     // confere de novo depois do await: dois cadastros com o mesmo nome ao mesmo tempo não passam os dois
     if (emUso()) { desfazer(); falhou(ip); throw new HttpError(409, 'Esse nome de usuário já está em uso'); }
+    // dois "primeiros" ao mesmo tempo: só um passa sem convite
+    if (!convidado && !semContas()) { desfazer(); falhou(ip); throw semConvite(); }
     const u = { id: snowflake(), username: name };
     // users.token é NOT NULL UNIQUE desde a primeira versão: ganha um valor aleatório que nunca é usado
     q('INSERT INTO users (id, name, token, senha) VALUES (?, ?, ?, ?)').run(u.id, name, tokenAleatorio(), hash);
@@ -644,20 +765,76 @@ async function lerCorpo(req) {
 }
 
 const TIPOS = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css' };
+// Com o servidor na internet (Funnel), outro site não pode pôr o Limb num iframe e enganar o clique (clickjacking).
+// frame-ancestors só vale em cabeçalho (na <meta> é ignorado); X-Frame-Options cobre navegador antigo.
+const SEM_MOLDURA = { 'Content-Security-Policy': "frame-ancestors 'none'", 'X-Frame-Options': 'DENY' };
 async function estatico(url, res) {
-  const arquivo = path.resolve(PUBLIC, '.' + (url.pathname === '/' ? '/index.html' : url.pathname));
+  const pedido = url.pathname === '/' ? '/index.html' : url.pathname;
+  // Só nomes simples em minúsculas: no Windows, "CONVITE.HTML", "convite.html." e "CONVIT~1.HTM" abrem o mesmo
+  // arquivo, e o modelo da página de convite só pode sair preenchido, por /convite/<código>
+  if (!/^(\/[a-z0-9_-]+)*\/[a-z0-9_-]+(\.[a-z0-9]+)+$/.test(pedido) || pedido === '/convite.html') return res.writeHead(404).end('Não encontrado');
+  const arquivo = path.resolve(PUBLIC, '.' + pedido);
   if (!arquivo.startsWith(PUBLIC + path.sep)) return res.writeHead(403).end();
   let corpo;
   try { corpo = await readFile(arquivo); } catch { return res.writeHead(404).end('Não encontrado'); }
   // no-cache + ETag: o navegador sempre confere, mas só baixa de novo se o arquivo mudou (atualização chega na hora)
   const etag = `"${createHash('sha1').update(corpo).digest('base64url')}"`;
-  const cab = { ETag: etag, 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' };
+  const html = path.extname(arquivo) === '.html';
+  const cab = { ETag: etag, 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff', ...(html && SEM_MOLDURA) };
   if (res.req.headers['if-none-match'] === etag) return res.writeHead(304, cab).end();
   res.writeHead(200, { ...cab, 'Content-Type': TIPOS[path.extname(arquivo)] || 'application/octet-stream' }).end(corpo);
 }
 
+// ── Página de convite ───────────────────────────────────────────────────────
+// /convite/<código>: o link que o anfitrião manda no WhatsApp. Montada aqui (e não pelo JS) porque quem gera a
+// prévia do link (og:title…) não roda script. Como no Discord, o link É o convite: com o código errado (link
+// antigo, depois do "Gerar link novo") a página diz que ele não vale mais, sem botões. Cada código errado conta
+// como erro no limite por IP, igual ao cadastro: senão a página viraria um jeito de chutar códigos. Bloqueado,
+// todo convite aparece como "não vale" (não dá para saber se acertou).
+const escapar = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const DOWNLOAD = VERSAO ? `https://github.com/AllanDeOliveira/Limb/releases/download/v${VERSAO}/Limb-${VERSAO}-instalador.exe`
+  : 'https://github.com/AllanDeOliveira/Limb/releases/latest';
+function conviteValePara(ip, codigo) {
+  if (!codigoConvite) return true; // servidor aberto: qualquer link serve
+  try { bloqueado(ip); } catch { return false; }
+  if (!codigo) return false; // /convite sem código não chuta nada: não conta como erro
+  if (conviteOk(codigo)) return true;
+  falhou(ip);
+  return false;
+}
+async function paginaConvite(bruto, req, res) {
+  let codigo = '';
+  try { codigo = decodeURIComponent(bruto ?? '').trim(); } catch { /* %E0%A4 cortado no meio: página sem código */ }
+  if (codigo.length > 100) codigo = '';
+  const valido = conviteValePara(ipDe(req), codigo);
+  const valores = {
+    nome: NOME_SERVIDOR, codigo, download: DOWNLOAD,
+    entrar: codigo ? `/#convite=${encodeURIComponent(codigo)}` : '/',
+    titulo: valido ? `Convite para ${NOME_SERVIDOR} no Limb` : 'Convite do Limb',
+    descricao: valido ? `Você foi convidado para ${NOME_SERVIDOR}. Conversa de texto e voz, com compartilhamento de tela.`
+      : 'Conversa de texto e voz, com compartilhamento de tela.',
+  };
+  let modelo;
+  try { modelo = await readFile(path.join(PUBLIC, 'convite.html'), 'utf8'); } catch { return res.writeHead(404).end('Não encontrado'); }
+  // Trechos <!--valido-->…<!--/valido--> e <!--invalido-->…<!--/invalido-->: só um dos dois sai na página.
+  // Antes da troca dos {{…}}: o nome e o código não conseguem abrir nem fechar um trecho.
+  const parte = valido ? 'valido' : 'invalido';
+  const corpo = modelo.replace(/<!--(valido|invalido)-->([\s\S]*?)<!--\/\1-->/g, (_, k, dentro) => (k === parte ? dentro : ''))
+    // uma passada só: um {{…}} dentro do nome ou do código não é trocado de novo
+    .replace(/\{\{(\w+)\}\}/g, (m, k) => (k in valores ? escapar(valores[k]) : m));
+  res.writeHead(valido ? 200 : 404, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer', // o código está no endereço: não vai para o GitHub ao baixar
+    ...SEM_MOLDURA,
+  }).end(corpo);
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  const convite = /^\/convite(?:\/([^/]+))?\/?$/.exec(url.pathname);
+  if (convite && ['GET', 'HEAD'].includes(req.method)) return paginaConvite(convite[1], req, res);
   if (!url.pathname.startsWith('/api/')) return estatico(url, res);
   try {
     const rota = rotas.find(([m, re]) => m === req.method && re.test(url.pathname));

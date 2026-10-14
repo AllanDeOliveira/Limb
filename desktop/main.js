@@ -4,8 +4,9 @@
 import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, nativeImage, net, Notification, session, shell, Tray, utilityProcess } from 'electron';
 import * as tailscale from './tailscale.js';
 import { iniciarAtualizacao } from './atualizacao.js';
+import { ehTailscale, gerarCodigo, lerConvite, lerConviteCopiado, lerDeepLink, linkConvite, mensagemConvite } from './convite.js';
 import { appendFileSync, cpSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
-import { networkInterfaces } from 'node:os';
+import { networkInterfaces, userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -49,26 +50,39 @@ const PADRAO = {
   endpoint: null, // ex.: "http://100.101.102.103:3000" para entrar no servidor de um amigo
   compartilharNaRede: false, // true: outros computadores podem entrar no servidor deste
   porta: 3000,
-  codigoConvite: '', // se preenchido, só cria conta quem tiver o código
+  codigoConvite: '', // vai escondido no link de convite; só cria conta quem abriu o link (troca: "Gerar link novo")
   iceServers: null, // null = STUN público do Google; lista própria para incluir um TURN (ver README)
-  conviteRecebido: '', // código de convite do servidor do amigo: já vem preenchido no login
+  conviteRecebido: '', // o código que veio no link do amigo: vai escondido para a tela de criar conta
   iniciarComWindows: false, // hospedando: sobe escondido na bandeja ao ligar o computador
   historico: [], // servidores em que já entrou: [{ url, nome, codigo, ultimoUso }], mais recente primeiro
   avisouBandeja: false, // o aviso "continua rodando perto do relógio" aparece uma vez só
+  internet: false, // hospedando: publica pelo Funnel do Tailscale e os amigos entram só com um link
+  nomeServidor: '', // nome que aparece no convite; vazio = "Servidor do <computador>"
+  turnCloudflare: { keyId: '', token: '' }, // TURN da Cloudflare: voz de quem está no 4G/CGNAT (ver README)
 };
 const primeiraVez = !existsSync(arqConfig);
 const lerJson = (f, padrao) => { try { return { ...padrao, ...JSON.parse(readFileSync(f, 'utf8')) }; } catch { return { ...padrao }; } };
 const config = lerJson(arqConfig, PADRAO);
+// o merge acima é raso: arquivo antigo (ou editado à mão) pode não ter o objeto inteiro
+const turn = config.turnCloudflare && typeof config.turnCloudflare === 'object' ? config.turnCloudflare : {};
+config.turnCloudflare = { keyId: String(turn.keyId ?? ''), token: String(turn.token ?? '') };
 if (!existsSync(arqConfig)) writeFileSync(arqConfig, JSON.stringify(PADRAO, null, 2)); // deixa o arquivo pronto para editar
 // Variável de ambiente vence o arquivo, como DISCORD_WEBAPP_ENDPOINT vence settings.json no Discord
 const endpointExterno = process.env.LIMB_ENDPOINT || config.endpoint;
 // Hospedando para amigos, fechar a janela não pode derrubar o servidor deles: o app vai para a bandeja.
 // Só entrando no servidor de alguém (ou hospedando só para si), fechar continua fechando.
-const hospedandoAmigos = !endpointExterno && config.compartilharNaRede;
+const hospedandoAmigos = !endpointExterno && (config.compartilharNaRede || config.internet);
+const publicando = !endpointExterno && config.internet; // hospedando pela internet (Funnel)
 const iniciouOculto = process.argv.includes('--oculto'); // aberto pelo "Iniciar com o Windows"
 const salvarConfig = () => writeFileSync(arqConfig, JSON.stringify(config, null, 2));
-// Reinicia sem o --oculto: quem pediu a troca está olhando para a tela
-const reiniciar = () => { app.relaunch({ args: process.argv.slice(1).filter((a) => a !== '--oculto') }); app.exit(0); };
+// Reinicia sem o --oculto (quem pediu a troca está olhando para a tela) e sem o limb:// que abriu o app
+// (senão o convite seria perguntado de novo a cada reinício)
+// O `funnel` esperando autorização morre junto (no Windows sobreviveria ao app); ao abrir, o app confere de novo.
+const reiniciar = () => {
+  tailscale.cancelarEspera();
+  app.relaunch({ args: process.argv.slice(1).filter((a) => a !== '--oculto' && !/^limb:/i.test(a)) });
+  app.exit(0);
+};
 
 // Histórico: o mesmo endereço sobe para o topo; guarda os 8 mais recentes
 function lembrarServidor({ url, codigo = '', nome }) {
@@ -88,6 +102,13 @@ if (config.endpoint && !config.historico.some((h) => h.url === config.endpoint))
 const unico = app.requestSingleInstanceLock();
 if (!unico) app.quit();
 
+// limb:// abre este app: é o "Abrir no app" da página de convite. O instalador também registra
+// (build.protocols); aqui cobre o portátil e o `npm run desktop` (forma da documentação do Electron).
+if (unico) {
+  if (process.defaultApp) { if (process.argv.length >= 2) app.setAsDefaultProtocolClient('limb', process.execPath, [path.resolve(process.argv[1])]); }
+  else app.setAsDefaultProtocolClient('limb', process.env.PORTABLE_EXECUTABLE_FILE || process.execPath); // portátil: o .exe original
+}
+
 // Microfone e tela exigem origem segura. Servidor de outra máquina em http:// não é; o Discord faz igual:
 // "Allowing insecure origin" para um WEBAPP_ENDPOINT http que não seja localhost.
 if (endpointExterno?.startsWith('http://') && !/^http:\/\/(localhost|127\.0\.0\.1)[:/]/.test(endpointExterno + '/')) {
@@ -96,15 +117,30 @@ if (endpointExterno?.startsWith('http://') && !/^http:\/\/(localhost|127\.0\.0\.
 
 let janela = null, servidor = null, janelaConexao = null, erroConexao = null, bandeja = null, saindo = false;
 
-function subirServidor() {
+// "Servidor do <computador>": o nome no Tailscale, ou o usuário do Windows
+async function nomePadrao() {
+  const ts = await tailscale.status().then((st) => st.nome).catch(() => null);
+  let usuario = null;
+  try { usuario = userInfo().username; } catch {}
+  return `Servidor do ${ts || usuario || 'Limb'}`.slice(0, 60);
+}
+
+async function subirServidor() {
+  // Na internet, qualquer pessoa alcança a página de criar conta: sem código, não sobe aberto
+  if (config.internet && !config.codigoConvite) { config.codigoConvite = gerarCodigo(); salvarConfig(); }
+  const nome = String(config.nomeServidor || '').trim().slice(0, 60) || await nomePadrao();
+  const { keyId, token } = config.turnCloudflare;
   return new Promise((resolve, reject) => {
     servidor = utilityProcess.fork(path.join(raiz, 'server.js'), [], {
       env: {
         ...process.env,
         PORT: String(config.porta),
+        // Só pela internet basta 127.0.0.1: o Funnel entrega as conexões localmente
         HOST: config.compartilharNaRede ? '' : '127.0.0.1',
         DB_FILE: path.join(dados, 'limb.db'), // dados ficam no perfil do usuário, não na pasta do app
         INVITE_CODE: config.codigoConvite || '',
+        SERVER_NAME: nome,
+        ...(keyId && token ? { CF_TURN_KEY_ID: keyId, CF_TURN_API_TOKEN: token } : {}),
         ...(config.iceServers ? { ICE_SERVERS: JSON.stringify(config.iceServers) } : {}),
       },
       stdio: 'inherit',
@@ -113,6 +149,38 @@ function subirServidor() {
     servidor.on('message', (m) => { if (m?.pronto) resolve(`http://127.0.0.1:${m.pronto}`); });
     servidor.on('exit', (code) => reject(new Error(`O servidor parou (código ${code}). A porta ${config.porta} pode estar em uso por outro programa.`)));
   });
+}
+
+// ── Publicação pela internet (Funnel do Tailscale) ────────────────────────────
+const abrirNoNavegador = (url) => { shell.openExternal(url); };
+// publicado = no ar e apontando para o servidor deste app (e não para outra porta)
+async function estadoFunnel(porta = config.porta) {
+  const f = await tailscale.funnelStatus();
+  return { ...f, publicado: f.ativo && f.porta === porta };
+}
+// Abriu hospedando pela internet: confere e liga se precisar, sem segurar a janela. Não abre o navegador
+// sozinho (pode ser o "Iniciar com o Windows"); se faltar autorizar, a faixa da janela principal avisa.
+// Enquanto isso, a faixa e o "Convidar amigos" esperam (senão piscariam "desligado" ao abrir).
+let garantindo = null;
+function garantirFunnel() {
+  garantindo = (async () => {
+    if ((await estadoFunnel()).publicado) return;
+    const r = await tailscale.ligarFunnel(config.porta, (url) => registrar('o Funnel precisa de autorização:', url));
+    if (r.erro) registrar('o Funnel não ligou:', r.erro);
+  })().catch((e) => registrar('Funnel:', e)).finally(() => { garantindo = null; });
+}
+// Deixou de hospedar pela internet: tira este computador da internet. Só desliga o Funnel que aponta
+// para a porta deste servidor (não o de outro programa). Melhor esforço: no máximo 6 s, depois segue.
+function despublicar(...portas) {
+  if (!portas.length) portas.push(config.porta);
+  tailscale.cancelarEspera(); // um `funnel` esperando autorização ligaria tudo depois que saímos
+  const tentar = async () => {
+    const f = await tailscale.funnelStatus();
+    if (!f.ativo || !portas.includes(f.porta)) return;
+    const r = await tailscale.desligarFunnel();
+    if (r.erro) registrar('o Funnel não desligou:', r.erro);
+  };
+  return Promise.race([tentar().catch((e) => registrar('Funnel:', e)), new Promise((ok) => setTimeout(ok, 6000))]);
 }
 
 function criarJanela(endpoint) {
@@ -157,8 +225,9 @@ function criarJanela(endpoint) {
   });
   janela.on('focus', () => janela.flashFrame(false));
 
-  // Só a origem do servidor pode pedir microfone, tela e notificação
-  const permitido = (wc, perm, url) => ['media', 'display-capture', 'notifications'].includes(perm) && new URL(url || wc.getURL()).origin === origem;
+  // Só a origem do servidor pode pedir microfone, tela, notificação e escrever na área de transferência
+  // (o "Copiar convite")
+  const permitido = (wc, perm, url) => ['media', 'display-capture', 'notifications', 'clipboard-sanitized-write'].includes(perm) && new URL(url || wc.getURL()).origin === origem;
   session.defaultSession.setPermissionRequestHandler((wc, perm, cb, det) => cb(permitido(wc, perm, det.requestingUrl)));
   session.defaultSession.setPermissionCheckHandler((wc, perm, origemReq) => permitido(wc, perm, origemReq));
 
@@ -191,15 +260,29 @@ function criarJanela(endpoint) {
   // outro lugar sem você ver.
   ipcMain.handle('limb:servidores', async (e) => {
     if (!daPagina(e)) return null;
-    const lista = await Promise.all(config.historico.map(async (h) => ({ ...h, online: (await testarServidor(h.url)).ok })));
+    // sem o código de cada convite: esta página é do servidor atual, e os convites dos outros não são da conta dele
+    const lista = await Promise.all(config.historico.map(async ({ codigo, ...h }) => ({ ...h, online: (await testarServidor(h.url)).ok })));
     return { atual: config.endpoint ?? null, lista };
   });
-  // Hospedando com o Tailscale desligado, ninguém de fora consegue entrar, e quem hospeda não percebe:
-  // a página consulta isto e mostra uma faixa com o botão de ligar
+  // Hospedando com o Tailscale (ou o Funnel) desligado, ninguém de fora consegue entrar, e quem hospeda
+  // não percebe: a página consulta isto e mostra uma faixa com o botão de ligar.
+  // internet/publicado são novos: páginas antigas só leem instalado/ligado.
   ipcMain.handle('limb:hospedagem', async (e) => {
     if (!daPagina(e) || !hospedandoAmigos) return null;
+    await garantindo;
     const st = await tailscale.status();
-    return { instalado: !!st.instalado, ligado: st.estado === 'Running' };
+    const ligado = st.estado === 'Running';
+    return { instalado: !!st.instalado, ligado, internet: !!publicando, publicado: publicando && ligado ? (await estadoFunnel()).publicado : null };
+  });
+  ipcMain.handle('limb:ligarFunnel', (e) => (daPagina(e) && publicando ? tailscale.ligarFunnel(config.porta, abrirNoNavegador) : null));
+  // "Convidar amigos": só com o Funnel no ar (link que não abre não é convite)
+  ipcMain.handle('limb:convite', async (e) => {
+    if (!daPagina(e) || !publicando || !config.codigoConvite) return null;
+    await garantindo;
+    const f = await estadoFunnel();
+    if (!f.publicado) return null;
+    const link = linkConvite(f.url, config.codigoConvite);
+    return { link, mensagem: mensagemConvite(link) };
   });
   ipcMain.handle('limb:ligarTailscale', async (e) => {
     if (!daPagina(e)) return null;
@@ -211,21 +294,8 @@ function criarJanela(endpoint) {
   ipcMain.handle('limb:entrarPorConvite', async (e, texto) => {
     if (!daPagina(e)) return { erro: 'negado' };
     const lido = lerConvite(texto);
-    if (!lido) return { erro: 'Não achei um endereço no convite. Ele parece com http://100.101.102.103:3000' };
-    const teste = await testarServidor(lido.url);
-    if (!teste.ok) return { erro: teste.erro };
-    const { response } = await dialog.showMessageBox(janela, {
-      type: 'question', buttons: ['Entrar', 'Cancelar'], defaultId: 0, cancelId: 1, title: NOME,
-      message: `Entrar no servidor ${lido.url}?`, detail: 'O Limb reinicia já conectado a ele. Você volta para cá pela lista de servidores.',
-    });
-    if (response !== 0) return { cancelado: true };
-    const host = new URL(lido.url).hostname;
-    const nome = await tailscale.status().then((st) => st.pares?.find((p) => p.ip === host)?.nome).catch(() => null);
-    lembrarServidor({ url: lido.url, codigo: lido.codigo, nome });
-    Object.assign(config, { endpoint: lido.url, conviteRecebido: lido.codigo });
-    salvarConfig();
-    reiniciar();
-    return {};
+    if (!lido) return { erro: 'Não achei o link do convite aí. Ele parece com https://alguem.tail1234.ts.net/convite/…' };
+    return entrarNoServidor(lido, janela);
   });
 
   // Compartilhar tela. O Electron não tem o seletor do Chrome: a página lista as fontes (com miniatura),
@@ -252,9 +322,13 @@ function criarJanela(endpoint) {
     callback({ video: c.fonte, ...(c.comAudio && process.platform === 'win32' ? { audio: 'loopback' } : {}) });
   });
 
-  // código de convite recebido vai no #, sem passar pelo servidor; a página preenche o campo e apaga
-  janela.loadURL(config.endpoint && config.conviteRecebido ? `${endpoint}/#convite=${encodeURIComponent(config.conviteRecebido)}` : endpoint);
-  if (primeiraVez) janela.once('ready-to-show', () => abrirConexao());
+  // O convite vai no # (não passa pelo servidor no pedido da página); a página guarda e apaga do endereço.
+  // No servidor de um amigo, o que veio no link dele; hospedando aqui, o deste servidor: quem hospeda também
+  // cria a conta sem digitar nada.
+  const convite = endpointExterno ? config.endpoint && config.conviteRecebido : config.codigoConvite;
+  janela.loadURL(convite ? `${endpoint}/#convite=${encodeURIComponent(convite)}` : endpoint);
+  // aberto por um link de convite: a pergunta do link vem primeiro (a janela Servidor só se ele não der certo)
+  if (primeiraVez && !linkPendente) janela.once('ready-to-show', () => abrirConexao());
 }
 
 function mostrarJanela() {
@@ -335,24 +409,94 @@ function abrirConexao(erro = null) {
   win.loadFile(path.join(raiz, 'desktop', 'conexao.html'));
 }
 const daConexao = (e) => janelaConexao && e.sender === janelaConexao.webContents;
-ipcMain.handle('conexao:ler', (e) => {
+ipcMain.handle('conexao:ler', async (e) => {
   if (!daConexao(e)) return null;
   const ips = Object.entries(networkInterfaces()).flatMap(([nome, lista]) => (lista ?? [])
     .filter((i) => i.family === 'IPv4' && !i.internal).map((i) => ({ nome, endereco: i.address })));
-  return { config, ips, erro: erroConexao, primeiraVez, portatil: !!process.env.PORTABLE_EXECUTABLE_DIR, podeIniciarComWindows };
+  // O token do TURN não volta para a tela depois de salvo: só o fim dele, para reconhecer
+  const { keyId, token } = config.turnCloudflare;
+  const cfg = { ...config, turnCloudflare: { keyId, tokenSalvo: !!token, fimDoToken: token.slice(-4) } };
+  // Primeira vez de quem recebeu um convite: o que ele copiou já vem preenchido. Da área de transferência
+  // só sai o endereço e o código lidos, nunca o texto.
+  const colado = primeiraVez && !config.endpoint ? lerConviteCopiado(clipboard.readText()) : null;
+  return {
+    config: cfg, ips, erro: erroConexao, primeiraVez, portatil: !!process.env.PORTABLE_EXECUTABLE_DIR, podeIniciarComWindows,
+    colado, nomePadrao: await nomePadrao(),
+  };
 });
 // Histórico: trocar com um clique (url null = este computador), esquecer, e o "Iniciar com o Windows"
-function trocarPara(url) {
+async function trocarPara(url) {
   if (url == null) { config.endpoint = null; config.conviteRecebido = ''; }
   else {
     const h = config.historico.find((x) => x.url === url);
     if (!h) return { erro: 'Esse servidor não está no histórico.' };
     lembrarServidor(h);
     Object.assign(config, { endpoint: h.url, conviteRecebido: h.codigo });
+    await despublicar(); // vai para o servidor de outro: este computador sai da internet
   }
   salvarConfig();
   reiniciar();
   return {};
+}
+
+// Entrar no servidor de um amigo por convite (colado na janela principal ou pelo link limb://).
+// Endereço novo sempre passa por uma confirmação nativa: nem um servidor nem um link conseguem mandar
+// você para outro lugar sem você ver.
+let confirmando = false;
+async function entrarNoServidor(lido, pai) {
+  if (confirmando) return { erro: 'Já tem um convite esperando resposta.' };
+  if (lido.url === config.endpoint) return { erro: 'Você já está nesse servidor.' };
+  confirmando = true;
+  try {
+    if (!endpointExterno && await ehEsteComputador(lido.url)) return { erro: 'Esse convite é do seu próprio servidor: você já está nele.' };
+    const teste = await testarServidor(lido.url);
+    if (!teste.ok) return { erro: teste.erro };
+    const { response } = await dialog.showMessageBox(pai && !pai.isDestroyed() ? pai : undefined, {
+      type: 'question', buttons: ['Entrar', 'Cancelar'], defaultId: 0, cancelId: 1, title: NOME,
+      message: `Entrar no servidor ${teste.nome ? `${teste.nome} (${lido.url})` : lido.url}?`,
+      detail: 'O Limb reinicia já conectado a ele. Você volta para cá pela lista de servidores.'
+        + (hospedandoAmigos ? '\n\nAtenção: você está hospedando o servidor dos seus amigos. Enquanto estiver no outro, eles ficam sem o seu.' : ''),
+    });
+    if (response !== 0) return { cancelado: true };
+    lembrarServidor({ url: lido.url, codigo: lido.codigo, nome: teste.nome || await nomeNoTailscale(lido.url) });
+    Object.assign(config, { endpoint: lido.url, conviteRecebido: lido.codigo });
+    salvarConfig();
+    await despublicar();
+    reiniciar();
+    return {};
+  } finally { confirmando = false; }
+}
+// nome do amigo no Tailscale ("pc-do-bruno"), que diz mais do que um 100.x.x.x
+const nomeNoTailscale = (url) => tailscale.status().then((st) => st.pares?.find((p) => p.ip === new URL(url).hostname)?.nome ?? null).catch(() => null);
+// O próprio link (o do Funnel deste computador) ou o próprio IP: "entrar" nele derrubaria o servidor
+async function ehEsteComputador(url) {
+  const host = new URL(url).hostname;
+  if (['localhost', '127.0.0.1', '[::1]'].includes(host)) return true;
+  const st = await tailscale.status().catch(() => ({}));
+  return !!host && (host === st.ip || host === st.dns?.toLowerCase());
+}
+
+// ── Links limb://entrar?servidor=…&convite=… ─────────────────────────────────
+// Chegam no argv (Windows/Linux: ao abrir, ou no 'second-instance' com o app já aberto) ou no 'open-url'
+// (macOS). Só são tratados com as janelas prontas; antes disso, ficam guardados.
+const linkDe = (argv) => argv.find((a) => typeof a === 'string' && /^limb:/i.test(a)) ?? null;
+let linkPendente = linkDe(process.argv), prontoParaLinks = false;
+async function tratarLink() {
+  if (!linkPendente || !prontoParaLinks) return;
+  const texto = linkPendente;
+  linkPendente = null;
+  // primeira vez e o link não deu certo: a janela Servidor (que o link pulou) ajuda a seguir
+  const ajudar = () => { if (primeiraVez && !janelaConexao) abrirConexao(); };
+  const lido = lerDeepLink(texto);
+  if (!lido) { registrar('link limb:// ignorado:', texto.slice(0, 300)); return ajudar(); }
+  mostrarJanela(); // a pergunta precisa aparecer na frente, mesmo com o app escondido na bandeja
+  if (lido.url === config.endpoint) return; // já está nele
+  const pai = janela ?? janelaConexao;
+  const r = await entrarNoServidor(lido, pai);
+  if (r.erro) {
+    await dialog.showMessageBox(pai && !pai.isDestroyed() ? pai : undefined, { type: 'warning', title: NOME, message: 'Não deu para entrar pelo convite.', detail: r.erro });
+  }
+  if (r.erro || r.cancelado) ajudar();
 }
 ipcMain.handle('conexao:trocar', (e, url) => (daConexao(e) ? trocarPara(url) : { erro: 'negado' }));
 ipcMain.handle('conexao:esquecer', (e, url) => {
@@ -376,26 +520,51 @@ ipcMain.handle('conexao:tailscaleLigar', async (e) => {
   return tailscale.ligar(st.estado, (url) => shell.openExternal(url));
 });
 ipcMain.handle('conexao:abrirCompartilhar', (e) => { if (daConexao(e)) shell.openExternal(tailscale.PAINEL_MAQUINAS); });
+ipcMain.handle('conexao:abrirCloudflare', (e) => { if (daConexao(e)) shell.openExternal('https://dash.cloudflare.com/?to=/:account/calls'); });
+// "Gerar link novo" (e o primeiro link de quem vai hospedar): o código nasce aqui, não na página. Vale na hora no
+// servidor que está rodando, sem reiniciar: os links antigos param de criar conta, contas e sessões continuam.
+ipcMain.handle('conexao:novoConvite', (e) => {
+  if (!daConexao(e)) return null;
+  config.codigoConvite = gerarCodigo();
+  salvarConfig();
+  if (servidor && !endpointExterno) {
+    try { servidor.postMessage({ convite: config.codigoConvite }); } catch (err) { registrar('convite novo não chegou ao servidor:', err); }
+  }
+  return { codigo: config.codigoConvite };
+});
 ipcMain.handle('conexao:copiar', (e, texto) => { if (daConexao(e)) clipboard.writeText(String(texto).slice(0, 2000)); });
 ipcMain.handle('conexao:testar', (e, url) => (daConexao(e) ? testarServidor(url) : { ok: false, erro: 'negado' }));
-// Convite colado: a mensagem inteira, só a URL, ou só "100.x.x.x:3000" (mesma regra da janela Servidor)
-function lerConvite(texto) {
-  const t = String(texto ?? '').slice(0, 2000);
-  let url = /https?:\/\/[^\s<>"'()]+/.exec(t)?.[0];
-  if (!url) { const m = /\b(\d{1,3}(?:\.\d{1,3}){3})(?::(\d{2,5}))?\b/.exec(t); if (m) url = `http://${m[1]}:${m[2] ?? 3000}`; }
-  try { url = url && new URL(url).origin; } catch { url = null; }
-  return url ? { url, codigo: /c[óo]digo[^:\n]*:\s*(\S+)/i.exec(t)?.[1] ?? '' } : null;
-}
+// Publicar pela internet: estado (consultado a cada 3 s) e o botão "Ativar". A porta é a do formulário,
+// que vale depois do "Salvar e reiniciar"; ao abrir, o app confere e corrige de qualquer jeito.
+const portaValida = (p) => Number.isInteger(p) && p >= 1024 && p <= 65535;
+ipcMain.handle('conexao:funnel', async (e, porta) => {
+  if (!daConexao(e)) return null;
+  const p = Math.trunc(Number(porta));
+  return estadoFunnel(portaValida(p) ? p : config.porta);
+});
+ipcMain.handle('conexao:funnelLigar', (e, porta) => {
+  if (!daConexao(e)) return null;
+  const p = Math.trunc(Number(porta));
+  if (!portaValida(p)) return { erro: 'Porta precisa estar entre 1024 e 65535.' };
+  return tailscale.ligarFunnel(p, abrirNoNavegador);
+});
+const NAO_RESPONDEU = 'O servidor não respondeu: o computador do seu amigo pode estar desligado ou com o Limb fechado.';
 async function testarServidor(url) {
   let origem;
-  try { origem = new URL(url).origin; if (!/^https?:$/.test(new URL(url).protocol)) throw 0; } catch { return { ok: false, erro: 'endereço inválido (use http://IP:porta)' }; }
+  try { origem = new URL(url).origin; if (!/^https?:$/.test(new URL(url).protocol)) throw 0; } catch { return { ok: false, erro: 'Endereço inválido. Cole o link do convite que seu amigo mandou.' }; }
   try {
     const r = await net.fetch(`${origem}/api/info`, { signal: AbortSignal.timeout(5000) });
-    return r.ok && 'convite' in (await r.json()) ? { ok: true } : { ok: false, erro: 'Respondeu, mas não é um servidor Limb.' };
+    // 502/503/504: o Funnel de quem hospeda está no ar, mas o Limb dele não (fechado ou reiniciando)
+    if (r.status >= 502 && r.status <= 504) return { ok: false, erro: NAO_RESPONDEU };
+    const info = r.ok ? await r.json().catch(() => null) : null;
+    if (!info || typeof info !== 'object' || !('convite' in info)) return { ok: false, erro: 'Respondeu, mas não é um servidor Limb.' };
+    // o nome vem do servidor (de quem hospeda): só texto curto, e a tela mostra com textContent
+    const nome = typeof info.nome === 'string' ? info.nome.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 60) : '';
+    return { ok: true, nome: nome || null };
   } catch {
-    // Explica o motivo mais provável, olhando o Tailscale
+    // Endereço do Tailscale (100.x): explica o motivo mais provável, olhando o Tailscale
     const host = new URL(origem).hostname;
-    if (!/^100\./.test(host)) return { ok: false, erro: 'Sem resposta. Confira o endereço e se o computador do seu amigo está ligado com o Limb rodando.' };
+    if (!ehTailscale(origem)) return { ok: false, erro: NAO_RESPONDEU };
     const st = await tailscale.status();
     if (!st.instalado) return { ok: false, erro: 'Esse endereço é do Tailscale: instale e entre no Tailscale (acima).' };
     if (st.estado !== 'Running') return { ok: false, erro: 'Seu Tailscale está desligado: ligue no passo 1, acima.' };
@@ -406,44 +575,83 @@ async function testarServidor(url) {
     return { ok: false, erro: `O computador dele (${par.nome}) está online, mas o servidor não respondeu: o Limb dele está rodando (pode estar só no ícone perto do relógio), hospedando, com "Deixar outros computadores entrarem" marcado? O firewall dele pode ter bloqueado o app.` };
   }
 }
+const limpar = (v, max) => String(v ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max);
 ipcMain.handle('conexao:salvar', async (e, novo) => {
-  if (!daConexao(e)) return { erro: 'negado' };
+  if (!daConexao(e) || !novo || typeof novo !== 'object') return { erro: 'negado' };
   const porta = Math.trunc(Number(novo.porta));
-  if (!(porta >= 1024 && porta <= 65535)) return { erro: 'Porta precisa estar entre 1024 e 65535.' };
+  if (!portaValida(porta)) return { erro: 'Porta precisa estar entre 1024 e 65535.' };
   let endpoint = null;
   if (novo.modo === 'entrar') {
     try { const u = new URL(String(novo.endpoint)); if (!/^https?:$/.test(u.protocol)) throw 0; endpoint = u.origin; }
-    catch { return { erro: 'Endereço inválido. Exemplo: http://100.101.102.103:3000' }; }
+    catch { return { erro: 'Endereço inválido. Cole o link do convite que seu amigo mandou.' }; }
   }
+  // Opções de hospedar: só mudam ao salvar hospedando (escondidas no "Entrar", não podem travar o salvar)
+  const hospedagem = {};
+  if (!endpoint) {
+    const internet = !!novo.internet;
+    // O código do convite nunca vem da página: ela já pediu um (conexao:novoConvite) ao escolher "Hospedar".
+    // Sem nenhum, gera aqui. Pela internet qualquer pessoa chega na tela de criar conta e o código é a tranca:
+    // um curto, escolhido à mão antes da 1.8, dá lugar a um novo (o link muda de qualquer jeito, de 100.x para .ts.net)
+    if (!config.codigoConvite || (internet && config.codigoConvite.length < 6)) hospedagem.codigoConvite = gerarCodigo();
+    const keyId = limpar(novo.turnKeyId, 200), tokenNovo = limpar(novo.turnToken, 1000);
+    const turn = novo.turnRemover ? { keyId: '', token: '' } : { keyId, token: tokenNovo || config.turnCloudflare.token };
+    if (turn.keyId && !/^[\w-]{8,128}$/.test(turn.keyId)) return { erro: 'O ID da chave TURN parece errado: copie de novo do painel da Cloudflare.' };
+    if (!novo.turnRemover && tokenNovo && !/^[\w.~+/=-]{16,512}$/.test(tokenNovo)) return { erro: 'O token da API parece errado: copie de novo do painel da Cloudflare.' };
+    if (!!turn.keyId !== !!turn.token) return { erro: 'Para a voz pelo 4G, preencha os dois: o ID da chave TURN e o token da API (ou remova a chave).' };
+    Object.assign(hospedagem, { internet, nomeServidor: limpar(novo.nomeServidor, 60), turnCloudflare: turn });
+  }
+  const portaAntiga = config.porta;
   Object.assign(config, {
-    endpoint, porta, compartilharNaRede: !!novo.compartilharNaRede, codigoConvite: String(novo.codigoConvite ?? '').slice(0, 100),
-    conviteRecebido: endpoint ? String(novo.conviteRecebido ?? '').slice(0, 100) : '',
+    endpoint, porta, compartilharNaRede: !!novo.compartilharNaRede,
+    conviteRecebido: endpoint ? limpar(novo.conviteRecebido, 100) : '',
+    ...hospedagem,
   });
-  if (endpoint) {
-    // nome do amigo no Tailscale ("pc-do-bruno"), que diz mais do que um 100.x.x.x
-    const host = new URL(endpoint).hostname;
-    const nome = await tailscale.status().then((st) => st.pares?.find((p) => p.ip === host)?.nome).catch(() => null);
-    lembrarServidor({ url: endpoint, codigo: config.conviteRecebido, nome });
-  }
+  if (endpoint) lembrarServidor({ url: endpoint, codigo: config.conviteRecebido, nome: (await testarServidor(endpoint)).nome || await nomeNoTailscale(endpoint) });
   salvarConfig();
+  // Foi para o servidor de um amigo ou trocou a internet pelo Tailscale: tira este computador do ar
+  // (inclusive um Funnel ativado agora há pouco nesta janela e não salvo)
+  if (endpoint || !config.internet) await despublicar(portaAntiga, porta);
   reiniciar();
   return {};
 });
 
-app.on('second-instance', mostrarJanela); // abrir o atalho de novo traz a janela, mesmo escondida na bandeja
+// Abrir o atalho de novo traz a janela, mesmo escondida na bandeja; um link limb:// chega por aqui
+// quando o app já está aberto
+app.on('second-instance', (_e, argv) => {
+  mostrarJanela();
+  if (!janela && janelaConexao) janelaConexao.focus();
+  const link = linkDe(argv);
+  if (link) { linkPendente = link; tratarLink(); }
+});
+app.on('open-url', (e, url) => { e.preventDefault(); linkPendente = url; tratarLink(); }); // macOS
 app.on('window-all-closed', () => { if (!bandeja) app.quit(); });
-app.on('before-quit', () => { saindo = true; });
-app.on('quit', () => servidor?.kill());
+// Fechando de vez hospedando pela internet: tira do ar antes (se outro programa usar esta porta depois,
+// ele não fica publicado na internet). Espera no máximo os 6 s do despublicar.
+let despublicouAoSair = false;
+app.on('before-quit', (e) => {
+  saindo = true;
+  // !unico: é a segunda instância saindo logo ao abrir; o Funnel é da primeira, que continua no ar
+  if (!unico || !publicando || despublicouAoSair) return;
+  despublicouAoSair = true;
+  e.preventDefault();
+  despublicar().finally(() => app.quit());
+});
+app.on('quit', () => { servidor?.kill(); tailscale.cancelarEspera(); });
 
 app.whenReady().then(async () => {
   if (!unico) return;
   try {
     criarJanela(endpointExterno || await subirServidor());
     if (hospedandoAmigos) { criarBandeja(); aplicarInicioComWindows(); }
+    if (publicando) garantirFunnel(); // em segundo plano: a janela não espera o Tailscale
   } catch (e) {
     // não fecha o app: deixa trocar a porta ou entrar no servidor de outra pessoa
     abrirConexao(`Não foi possível iniciar o servidor: ${e.message}`);
+    // a porta pode ser de outro programa: um Funnel ligado de antes o publicaria na internet
+    if (publicando) despublicar();
   }
+  prontoParaLinks = true;
+  tratarLink();
   iniciarAtualizacao(() => janela ?? janelaConexao);
 });
 // showErrorBox bloqueia o processo inteiro até alguém fechar a caixa; se ela ficar atrás das janelas, o app

@@ -30,11 +30,13 @@
   .modo[aria-pressed="true"] { border-color: var(--acc); }
   ol { margin: 0; padding-left: 20px; display: grid; gap: 12px; }
   label.campo { display: grid; gap: 4px; }
-  input[type=text], input[type=number], textarea { background: var(--bg0); color: var(--txt); border: 1px solid var(--linha); border-radius: 8px; padding: 8px 10px; font: inherit; width: 100%; }
+  input[type=text], input[type=number], input[type=password], textarea { background: var(--bg0); color: var(--txt); border: 1px solid var(--linha); border-radius: 8px; padding: 8px 10px; font: inherit; width: 100%; }
   input:focus, textarea:focus { border-color: var(--acc); outline: none; }
   :focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
   textarea { resize: vertical; min-height: 88px; }
-  .convite { white-space: pre-wrap; background: var(--bg0); border-radius: 4px; padding: 10px; font-size: 13px; user-select: all; margin: 6px 0; }
+  #linkConvite { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+  .alerta { color: var(--warn); }
+  .alerta:empty { display: none; }
   .linha { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   button { font: inherit; color: inherit; border: 0; border-radius: 8px; padding: 8px 14px; background: var(--bg3); cursor: pointer; }
   button:hover:not(:disabled) { filter: brightness(1.15); }
@@ -54,6 +56,17 @@
   .srv .tag { font-size: 12px; font-weight: 700; color: var(--acc); }
   .srv .x { background: none; padding: 6px 8px; color: var(--mut); }
   .srv .x:hover { color: var(--err); }
+  /* como os amigos entram (internet ou Tailscale) */
+  .como { border: 0; margin: 0 0 14px; padding: 0; display: grid; gap: 8px; }
+  .como legend { padding: 0; margin-bottom: 8px; font-weight: 700; }
+  .opcao { display: flex; gap: 10px; align-items: flex-start; background: var(--bg2); border: 1px solid var(--linha); border-radius: 10px; padding: 10px 12px; cursor: pointer; }
+  .opcao:has(input:checked) { border-color: var(--acc); }
+  .opcao input { margin: 3px 0 0; accent-color: var(--acc); }
+  .opcao > span { display: grid; gap: 2px; }
+  .passo-extra { display: grid; gap: 8px; margin-top: 6px; }
+  .guia { margin: 0; padding-left: 18px; color: var(--mut); font-size: 13px; display: grid; gap: 2px; }
+  #funnel { margin-top: 6px; }
+  #funnelTexto { overflow-wrap: anywhere; }
   details summary { cursor: pointer; color: var(--mut); }
   details[open] summary { margin-bottom: 8px; }
 </style>
@@ -61,7 +74,7 @@
 <body>
 <h1 id="titulo">Servidor</h1>
 <p class="mut" id="subtitulo">Hospede uma conversa no seu computador ou entre na de um amigo.</p>
-<div class="erro" id="erro" hidden></div>
+<div class="erro" id="erro" role="alert" hidden></div>
 
 <section class="caixa" id="servidores">
   <h2>Seus servidores</h2>
@@ -69,38 +82,64 @@
   <small>Cada servidor tem as próprias contas e conversas. Verde = no ar agora.</small>
 </section>
 
-<section class="caixa">
-  <h2>1. Tailscale</h2>
-  <div class="ts" id="ts"><span class="bola"></span><span class="txt" id="tsTexto">Verificando…</span><button type="button" id="tsBotao" hidden></button></div>
-  <small>O Tailscale liga você e seus amigos com segurança, sem mexer no roteador. Grátis.</small>
-</section>
-
-<h2>2. O que você quer fazer?</h2>
+<h2>O que você quer fazer?</h2>
 <div class="modos">
   <button type="button" class="modo" data-modo="hospedar" aria-pressed="false"><b><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10l9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Hospedar</b><span>Meus amigos entram no meu computador</span></button>
   <button type="button" class="modo" data-modo="entrar" aria-pressed="false"><b><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3"/></svg>Entrar</b><span>Um amigo me mandou um convite</span></button>
 </div>
 
 <section class="caixa" id="hospedar" hidden>
+  <fieldset class="como">
+    <legend>Como seus amigos vão entrar?</legend>
+    <label class="opcao"><input type="radio" name="como" value="internet"><span><b>Pela internet, só com um link</b><small>Recomendado: eles não instalam nada.</small></span></label>
+    <label class="opcao"><input type="radio" name="como" value="tailscale"><span><b>Pelo Tailscale</b><small>Cada amigo instala o Tailscale.</small></span></label>
+  </fieldset>
   <ol>
     <li>
+      <b>Tailscale ligado neste computador.</b> <small id="tsDica"></small>
+      <!-- o status do Tailscale mora aqui; no "Entrar" com endereço 100.x, muda para lá -->
+      <div id="tsLugarHospedar"><div class="ts" id="ts"><span class="bola"></span><span class="txt" id="tsTexto">Verificando…</span><button type="button" id="tsBotao" hidden></button></div></div>
+    </li>
+    <li data-como="tailscale">
       <b>Dê acesso ao seu computador.</b> Na página do Tailscale, ache <b id="meuNome">este computador</b>, clique em
       <b>⋯ → Share…</b> e mande o link para o seu amigo. <small>Ele só ganha acesso a este computador.</small>
       <div class="linha" style="margin-top: 6px"><button type="button" id="abrirShare">Abrir página do Tailscale</button></div>
     </li>
-    <li>
-      <b>Mande o convite.</b>
-      <div class="convite" id="convite"></div>
-      <div class="linha"><button type="button" id="copiar">Copiar convite</button><span id="copiado" class="mut" role="status"></span></div>
+    <li data-como="internet">
+      <b>Publicar na internet.</b> <small>Seus amigos entram por um endereço https://….ts.net, com cadeado. Só quem tiver o link de convite cria conta.</small>
+      <div class="ts" id="funnel"><span class="bola"></span><span class="txt" id="funnelTexto" role="status">Verificando…</span><button type="button" id="funnelBotao" hidden>Ativar</button></div>
     </li>
-    <li><b>Clique em “Salvar e reiniciar”.</b> <small>Se o Windows perguntar sobre o firewall, clique em Permitir.</small></li>
+    <li data-como="internet">
+      <b>Voz para quem está no 4G</b> <small>(opcional, recomendado)</small>
+      <div class="passo-extra">
+        <small>No 4G e em algumas internets a voz não conecta direto. Uma chave TURN grátis da Cloudflare resolve.</small>
+        <ol class="guia">
+          <li>No painel da Cloudflare: Realtime → TURN → Criar chave.</li>
+          <li>Copie o ID da chave e o token da API e cole aqui.</li>
+          <li>São 1.000 GB grátis por mês: sobra para um grupo de amigos.</li>
+        </ol>
+        <div class="linha"><button type="button" id="abrirCloudflare">Abrir o painel da Cloudflare</button></div>
+        <label class="campo">ID da chave TURN <input type="text" id="turnId" maxlength="128" autocomplete="off" spellcheck="false"></label>
+        <div class="linha" id="turnSalvo" hidden><span>✔ Token salvo <span class="mut" id="turnFim"></span></span>
+          <button type="button" id="turnTrocar">Trocar</button><button type="button" id="turnRemover">Remover</button></div>
+        <label class="campo" id="turnCampoToken">Token da API <input type="password" id="turnToken" maxlength="512" autocomplete="off" spellcheck="false"></label>
+        <small id="turnStatus" role="status"></small>
+      </div>
+    </li>
+    <li>
+      <b>Mande o convite.</b> <small>O link é o convite: quem abre entra direto.</small>
+      <label class="campo" style="margin-top: 6px">Link de convite <input type="text" id="linkConvite" readonly spellcheck="false" aria-describedby="conviteAviso"></label>
+      <small id="conviteAviso" class="alerta"></small>
+      <div class="linha" style="margin-top: 6px"><button type="button" id="copiar">Copiar convite</button><button type="button" id="novoLink">Gerar link novo</button><span id="copiado" class="mut" role="status"></span></div>
+    </li>
+    <li><b>Clique em “Salvar e reiniciar”.</b> <small id="dicaFirewall">Se o Windows perguntar sobre o firewall, clique em Permitir.</small></li>
     <li><b>Pode fechar a janela:</b> o Limb continua rodando perto do relógio e seus amigos seguem conversando. <small>Só o computador precisa ficar ligado.</small></li>
   </ol>
   <details style="margin-top: 12px">
     <summary>Opções</summary>
     <div style="display: grid; gap: 10px">
-      <label class="campo">Código de convite <small>(quem não tiver não cria conta; vazio = não pede)</small>
-        <input type="text" id="codigo" maxlength="100" autocomplete="off"></label>
+      <label class="campo">Nome do servidor <small>(seus amigos veem no convite e na lista de servidores)</small>
+        <input type="text" id="nomeServidor" maxlength="60" autocomplete="off"></label>
       <label class="campo">Porta <input type="number" id="porta" min="1024" max="65535"></label>
       <label><input type="checkbox" id="compartilhar"> Deixar outros computadores entrarem</label>
       <label id="campoIniciar"><input type="checkbox" id="iniciarComWindows"> Iniciar com o Windows <small>(o servidor sobe escondido, perto do relógio)</small></label>
@@ -113,12 +152,14 @@
 
 <section class="caixa" id="entrar" hidden>
   <ol>
-    <li><b>Aceite o link do Tailscale</b> que seu amigo mandou (abre no navegador, clique em aceitar).</li>
+    <!-- só para convite com endereço do Tailscale (100.x); pelo link da internet não precisa -->
+    <li id="entrarTs" hidden><b>Tailscale ligado.</b> <small>Esse endereço é do Tailscale: você também precisa dele.</small><div id="tsLugarEntrar"></div></li>
+    <li id="entrarAceite" hidden><b>Aceite o link do Tailscale</b> que seu amigo mandou (abre no navegador, clique em aceitar).</li>
     <li>
       <label class="campo"><b>Cole aqui o convite dele</b>
-        <textarea id="colar" placeholder="Pode colar a mensagem inteira: o app acha o endereço e o código sozinho."></textarea></label>
+        <textarea id="colar" placeholder="Pode colar a mensagem inteira ou só o link."></textarea></label>
       <div class="linha" style="margin-top: 6px">
-        <span class="mut">Endereço:</span> <b id="lidoEndereco">—</b><span class="mut">· Código:</span> <b id="lidoCodigo">—</b>
+        <span class="mut">Endereço:</span> <b id="lidoEndereco">—</b><span class="mut" id="lidoConvite"></span>
         <button type="button" id="testar" disabled>Testar de novo</button>
       </div>
       <p id="resultado" role="status" style="margin: 8px 0 0"></p>
