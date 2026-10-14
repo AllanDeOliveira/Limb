@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('conexao', {
   ler: () => ipcRenderer.invoke('conexao:ler'),
   salvar: (cfg) => ipcRenderer.invoke('conexao:salvar', cfg),
   testar: (url) => ipcRenderer.invoke('conexao:testar', String(url)),
+  lerConvite: (texto) => ipcRenderer.invoke('conexao:lerConvite', String(texto).slice(0, 2000)), // { url, codigo, tailscale } | null
   tailscale: () => ipcRenderer.invoke('conexao:tailscale'),
   tailscaleLigar: () => ipcRenderer.invoke('conexao:tailscaleLigar'),
   abrirCompartilhar: () => ipcRenderer.invoke('conexao:abrirCompartilhar'),

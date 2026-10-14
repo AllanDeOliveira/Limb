@@ -12,10 +12,7 @@ const pastaWin = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Tai
 
 function exe() {
   if (process.platform === 'win32' && existsSync(path.join(pastaWin, 'tailscale.exe'))) return path.join(pastaWin, 'tailscale.exe');
-  if (process.platform === 'darwin' && existsSync('/Applications/Tailscale.app/Contents/MacOS/Tailscale')) {
-    return '/Applications/Tailscale.app/Contents/MacOS/Tailscale';
-  }
-  return 'tailscale'; // no PATH (Linux)
+  return 'tailscale'; // no PATH
 }
 
 function abrirApp() {

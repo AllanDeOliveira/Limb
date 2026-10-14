@@ -122,20 +122,13 @@ test('funnel: URL de autorização só inteira, e erros em português', () => {
   assert.match(explicarErroFunnel('', 'desligar a publicação'), /não conseguiu desligar a publicação/);
 });
 
-test('convite: link, código de 12 caracteres e a cópia da janela Servidor', () => {
+test('convite: link e código de 12 caracteres, gerado só no app', () => {
   assert.equal(linkConvite(HOST, 'a b/c'), `${HOST}/convite/a%20b%2Fc`);
   assert.equal(deepLink(HOST, 'x&y'), `limb://entrar?servidor=${encodeURIComponent(HOST)}&convite=x%26y`);
   assert.match(gerarCodigo(), /^[a-hjkmnp-z2-9]{12}$/);
   assert.notEqual(gerarCodigo(), gerarCodigo());
   assert.ok(ehTailscale('http://100.101.102.103:3000') && ehTailscale('http://100.64.0.1') && !ehTailscale('http://100.1.2.3') && !ehTailscale(HOST) && !ehTailscale('lixo'));
-  // conexao.js (script da janela, não importa módulos) tem uma cópia de lerConvite/lerDeepLink: confere que não divergiram
   const janela = readFileSync(new URL('./desktop/conexao.js', import.meta.url), 'utf8');
-  const modulo = readFileSync(new URL('./desktop/convite.js', import.meta.url), 'utf8');
-  const corpo = (fonte, nome) => {
-    const i = fonte.indexOf(`function ${nome}(`);
-    return fonte.slice(i, fonte.indexOf('\n}\n', i)).replace(/^\s*\/\/.*\n/gm, ''); // comentários podem diferir
-  };
-  for (const nome of ['lerDeepLink', 'lerConvite', 'ehTailscale']) assert.equal(corpo(janela, nome), corpo(modulo, nome), nome);
   // o código nasce só no app (main): a janela não tem gerador próprio que possa ficar para trás
   assert.ok(!/gerarCodigo|getRandomValues/.test(janela));
 });

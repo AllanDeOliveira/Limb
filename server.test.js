@@ -175,25 +175,6 @@ test('fluxo completo', async (t) => {
     assert.notEqual((await fetch(`${B}/..%2f..%2fserver.js`)).status, 200);
   });
 
-  await t.test('gateway em ETF (?encoding=etf): frames binários, snowflake chega como string', async () => {
-    const { pack, unpack } = await import('./public/etf.js');
-    const ev = await new Promise((res) => {
-      const ws = new WebSocket(B.replace('http', 'ws') + '/gateway?encoding=etf');
-      ws.binaryType = 'arraybuffer';
-      const ev = [];
-      ws.onmessage = (e) => {
-        assert.ok(e.data instanceof ArrayBuffer); // binário, não texto
-        const p = unpack(e.data);
-        ev.push(p);
-        if (p.op === 10) ws.send(pack({ op: 2, d: { token: a.token } }));
-        if (p.t === 'READY') { ws.close(1000); res(ev); }
-      };
-    });
-    const r = ev.find((p) => p.t === 'READY').d;
-    assert.equal(r.user.id, a.user.id); // BigInt → SMALL_BIG → string decimal, igual ao JSON
-    assert.equal(r.guilds[0].channels[0].id, ch.id);
-  });
-
   await t.test('voz: op 4 → VOICE_SERVER_UPDATE → gateway de voz, sinalização entre pares', async () => {
     const vc = ready.guilds[0].channels.find((c) => c.type === 2);
     assert.ok(vc, 'servidor novo vem com canal de voz');
@@ -209,7 +190,7 @@ test('fluxo completo', async (t) => {
       ws.onmessage = (e) => {
         const p = JSON.parse(e.data);
         ev.push(p);
-        if (p.op === 8) ws.send(JSON.stringify({ op: 0, d: { server_id: vsu.guild_id, user_id: user.id, session_id: sessionId, token: vsu.token } }));
+        if (p.op === 8) ws.send(JSON.stringify({ op: 0, d: { user_id: user.id, session_id: sessionId, token: vsu.token } }));
         if (p.op === 2) res({ ws, ev });
       };
       ws.onclose = (e) => { ev.push({ closed: e.code }); res({ ws, ev }); };
@@ -221,7 +202,6 @@ test('fluxo completo', async (t) => {
     await esperar(B2, (p) => p.t === 'VOICE_STATE_UPDATE' && p.d.user_id === a.user.id && p.d.channel_id === vc.id);
     const VA = await voz(vsuA, a.user, sid(A2));
     assert.equal(VA.ev[0].op, 8);
-    assert.ok(VA.ev.find((p) => p.op === 2).d.ssrc > 0);
     assert.deepEqual(VA.ev.find((p) => p.op === 2).d.ice_servers, [{ urls: 'stun:exemplo:3478' }]);
 
     // ana compartilha a tela antes da bia chegar
@@ -250,7 +230,7 @@ test('fluxo completo', async (t) => {
 
     // sinalização WebRTC repassada só ao destinatário, com o remetente carimbado pelo servidor
     VB.ws.send(JSON.stringify({ op: 100, d: { to: a.user.id, from: 'forjado', description: { type: 'offer', sdp: 'v=0' } } }));
-    VB.ws.send(JSON.stringify({ op: 5, d: { speaking: 1, delay: 0, ssrc: 1 } }));
+    VB.ws.send(JSON.stringify({ op: 5, d: { speaking: 1 } }));
     await wait(80);
     assert.deepEqual(VA.ev.find((p) => p.op === 100).d, { from: b.user.id, description: { type: 'offer', sdp: 'v=0' } });
     assert.equal(VA.ev.find((p) => p.op === 5).d.user_id, b.user.id);
@@ -597,7 +577,7 @@ async function readyDaVoz(base, token) {
     const ws = new WebSocket(base.replace('http', 'ws') + vsu.endpoint);
     ws.onmessage = (e) => {
       const p = JSON.parse(e.data);
-      if (p.op === 8) ws.send(JSON.stringify({ op: 0, d: { server_id: vsu.guild_id, user_id: ready.user.id, session_id: ready.session_id, token: vsu.token } }));
+      if (p.op === 8) ws.send(JSON.stringify({ op: 0, d: { user_id: ready.user.id, session_id: ready.session_id, token: vsu.token } }));
       if (p.op === 2) { res(p.d); ws.close(); }
     };
     ws.onclose = (e) => rej(new Error(`gateway de voz fechou (${e.code}) antes do READY`));

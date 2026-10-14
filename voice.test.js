@@ -28,7 +28,7 @@ function montar(opcoes = {}) {
     ws.mandar = (op, d) => ws.emit('message', JSON.stringify({ op, d }));
     ws.de = (op) => ws.ev.filter((p) => p.op === op).map((p) => p.d);
     voz.gatewayVoz(ws);
-    ws.mandar(VOP.IDENTIFY, { server_id: 'g', user_id: sessao.user.id, session_id: sessao.id, token });
+    ws.mandar(VOP.IDENTIFY, { user_id: sessao.user.id, session_id: sessao.id, token });
     return { ws, sessao, sair: () => voz.atualizarEstado(sessao, { channel_id: null }) };
   };
   const conectar = (userId, canal) => usarToken(pedirToken(userId, canal));

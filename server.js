@@ -13,7 +13,6 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
 import { snowflake, parseSearch, searchToSql } from './lib.js';
-import { pack, unpack } from './public/etf.js';
 import { criarVoz } from './voice.js';
 
 const PORT = Number(process.env.PORT ?? 3000); // PORT=0 = porta livre qualquer (testes)
@@ -147,14 +146,8 @@ const nomeCanal = (s) => String(s ?? '').trim().toLowerCase().replace(/\s+/g, '-
 const sessions = new Map(); // session_id → { id, user, auth, seq, ws, buffer, expira }; auth = id da sessão de login
 const online = () => [...new Set([...sessions.values()].map((s) => s.user.id))];
 
-// Cada socket escolhe o formato na URL (?encoding=json|etf), como no gateway do Discord.
-// ETF: BigInt (snowflake) vai como SMALL_BIG; campos undefined somem, igual ao JSON.
-const semUndefined = (v) => (Array.isArray(v) ? v.map(semUndefined)
-  : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([, x]) => x !== undefined).map(([k, x]) => [k, semUndefined(x)]))
-  : v);
 function send(s, payload) {
-  if (s.ws?.readyState !== 1) return;
-  s.ws.send(s.ws.etf ? pack(semUndefined(payload)) : json(payload));
+  if (s.ws?.readyState === 1) s.ws.send(json(payload));
 }
 function dispatch(s, t, d) {
   const p = { op: OP.DISPATCH, t, s: ++s.seq, d };
@@ -194,11 +187,10 @@ function readyPayload(s) {
   };
 }
 
-function gateway(ws, req) {
+function gateway(ws) {
   // Frame grande demais ou UTF-8 inválido: o ws emite 'error' no socket (e já fecha com o código certo).
   // Sem ouvinte, o 'error' derrubava o servidor de todo mundo.
   ws.on('error', () => {});
-  ws.etf = new URL(req.url, 'http://x').searchParams.get('encoding') === 'etf';
   let s = null, timer;
   // Cliente que não manda heartbeat no prazo é zumbi: fecha (código 4009 = session timed out)
   const vigiar = () => { clearTimeout(timer); timer = setTimeout(() => ws.close(4009, 'Session timed out'), HEARTBEAT_INTERVAL * 1.5); };
@@ -213,7 +205,7 @@ function gateway(ws, req) {
   });
   function receber(raw) {
     let p;
-    try { p = ws.etf ? unpack(raw) : JSON.parse(raw); } catch { return ws.close(4002, 'Decode error'); }
+    try { p = JSON.parse(raw); } catch { return ws.close(4002, 'Decode error'); }
     if (!p || typeof p !== 'object' || Array.isArray(p)) return ws.close(4002, 'Decode error'); // "null", "1", "[]"…
     if (p.op === OP.HEARTBEAT) { vigiar(); return send({ ws }, { op: OP.HEARTBEAT_ACK }); }
     if (s) {

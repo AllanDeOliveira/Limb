@@ -2,7 +2,6 @@
 // No cliente oficial: eventos do gateway viram ações (`eW({type:"TYPING_START",...})`)
 // e cada store registra handlers por tipo (`new Store(dispatcher, {MESSAGE_CREATE(e){...}})`).
 
-import { pack, unpack } from './etf.js';
 import { criarClienteVoz, RESOLUCOES, TAXAS, codecsDeVideo, estimativaTela } from './voz.js';
 import { opcoesDispositivos } from './dispositivos.js';
 import { criarSons } from './sons.js';
@@ -264,18 +263,12 @@ const gateway = {
   retomando: false, // entre o RESUME e o RESUMED: chegam os eventos perdidos, que não devem tocar som
   connect() {
     dispatch({ type: 'CONNECTION_STATE', state: 'conectando…' });
-    // ETF binário, como o desktop do Discord com discord_erlpack; ?encoding=json também funciona
-    const ws = (this.ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/gateway?encoding=etf`));
-    ws.binaryType = 'arraybuffer';
-    const enviar = (p) => ws.send(pack(p));
+    const ws = (this.ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/gateway`));
+    const enviar = (p) => ws.send(JSON.stringify(p));
     this.enviar = enviar;
     const identify = () => { this.sessionId = null; this.seq = 0; enviar({ op: OP.IDENTIFY, d: { token: store.token } }); };
     ws.onmessage = (e) => {
-      let p;
-      try { p = unpack(e.data); } catch { // ex.: servidor de outra versão, que só fala JSON
-        dispatch({ type: 'CONNECTION_STATE', state: 'erro: o servidor não fala a mesma versão do app' });
-        return;
-      }
+      const p = JSON.parse(e.data);
       if (p.op === OP.HELLO) {
         this.heartbeat(p.d.heartbeat_interval);
         // como o `_doResumeOrIdentify` do Discord: com sessão, tenta retomar sem perder eventos
@@ -483,7 +476,7 @@ function painelMe() {
 function render() {
   if (!store.me) { // ainda sem READY: mostra o estado da conexão e como sair
     $('#conn').textContent = store.conn;
-    $('#chanName').textContent = store.conn.startsWith('erro') ? 'Não foi possível conectar' : 'Conectando…';
+    $('#chanName').textContent = 'Conectando…';
     trocar($('#me'), painelMe());
     return;
   }
@@ -1172,17 +1165,20 @@ function avisarCaps(campos, aviso) {
 avisarCaps([senhaForm.atual, senhaForm.nova, senhaForm.confirmar], $('#contaCaps'));
 
 // ── Sessão ──────────────────────────────────────────────────────────────────
-const salvo = { get: () => { try { return localStorage.getItem('token'); } catch { return null; } },
-  set: (v) => { try { v ? localStorage.setItem('token', v) : localStorage.removeItem('token'); } catch {} } };
+// localStorage pode não existir (bloqueado, modo privado): sem ele, só não lembra; vazio apaga
+const guardado = (chave) => ({
+  get: () => { try { return localStorage.getItem(chave) ?? ''; } catch { return ''; } },
+  set: (v) => { try { v ? localStorage.setItem(chave, v) : localStorage.removeItem(chave); } catch {} },
+});
+const salvo = guardado('token');
 // Já entrou neste servidor alguma vez? Convite abre em "Criar conta" só para quem nunca entrou
-const jaEntrou = { get: () => { try { return localStorage.getItem('jaEntrou') === '1'; } catch { return false; } },
-  marcar: () => { try { localStorage.setItem('jaEntrou', '1'); } catch {} } };
+const jaEntrou = guardado('jaEntrou');
 
 const loginForm = $('#login form');
 function entrar(token) {
   store.token = token;
   salvo.set(token);
-  jaEntrou.marcar();
+  jaEntrou.set('1');
   loginForm.password.value = loginForm.confirmar.value = '';
   mostrarSenha(false);
   $('#loginAviso').textContent = '';
@@ -1234,14 +1230,12 @@ const semConviteAviso = () => (semDono
 // Como no Discord, o link é o convite: o código vem escondido nele (/#convite=<código>) e ninguém vê nem
 // digita. Fica guardado neste navegador (o localStorage já é separado por servidor) para sobreviver a
 // recarregar a página ou trocar entre Entrar e Criar conta.
-const conviteSalvo = { get: () => { try { return localStorage.getItem('convite') ?? ''; } catch { return ''; } },
-  set: (v) => { try { v ? localStorage.setItem('convite', v) : localStorage.removeItem('convite'); } catch {} } };
+const conviteSalvo = guardado('convite');
 let convite = conviteSalvo.get();
 const guardarConvite = (c) => { convite = c; conviteSalvo.set(c); };
 // O último convite que o servidor recusou: o app desktop recoloca o #convite= do link antigo a cada abertura,
 // e ele não pode apagar um link novo que a pessoa colou aqui
-const conviteRecusado = { get: () => { try { return localStorage.getItem('conviteRecusado') ?? ''; } catch { return ''; } },
-  set: (v) => { try { localStorage.setItem('conviteRecusado', v); } catch {} } };
+const conviteRecusado = guardado('conviteRecusado');
 // Link colado: …/convite/<código>, …/#convite=<código>, limb://entrar?…&convite=<código> ou a mensagem inteira
 // do convite; em último caso, o código sozinho. null = não achei convite nenhum.
 function lerLinkConvite(texto) {

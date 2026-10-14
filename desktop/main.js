@@ -163,6 +163,12 @@ async function subirServidor() {
 
 // ── Publicação pela internet (Funnel do Tailscale) ────────────────────────────
 const abrirNoNavegador = (url) => { shell.openExternal(url); };
+// Botão "Ligar o Tailscale" (faixa da janela principal e janela Servidor): sem ele instalado, abre o download
+async function ligarTailscale() {
+  const st = await tailscale.status();
+  if (!st.instalado) { abrirNoNavegador(tailscale.DOWNLOAD); return { baixando: true }; }
+  return tailscale.ligar(st.estado, abrirNoNavegador);
+}
 // publicado = no ar e apontando para o servidor deste app (e não para outra porta)
 async function estadoFunnel(porta = config.porta) {
   const f = await tailscale.funnelStatus();
@@ -283,7 +289,6 @@ function criarJanela(endpoint) {
   const daPagina = (e) => { try { return new URL(e.senderFrame.url).origin === origem; } catch { return false; } };
   ipcMain.on('limb:atencao', (e, mencoes) => {
     if (!daPagina(e)) return;
-    app.setBadgeCount(Math.max(0, Math.trunc(Number(mencoes)) || 0)); // macOS/Linux; no Windows não faz nada
     if (mencoes > 0 && !janela.isFocused()) janela.flashFrame(true); // pisca na barra de tarefas
   });
   ipcMain.on('limb:focar', (e) => {
@@ -321,12 +326,7 @@ function criarJanela(endpoint) {
     const link = linkConvite(f.url, config.codigoConvite);
     return { link, mensagem: mensagemConvite(link) };
   });
-  ipcMain.handle('limb:ligarTailscale', async (e) => {
-    if (!daPagina(e)) return null;
-    const st = await tailscale.status();
-    if (!st.instalado) { shell.openExternal(tailscale.DOWNLOAD); return { baixando: true }; }
-    return tailscale.ligar(st.estado, (url) => shell.openExternal(url));
-  });
+  ipcMain.handle('limb:ligarTailscale', (e) => (daPagina(e) ? ligarTailscale() : null));
   ipcMain.handle('limb:trocarServidor', (e, url) => (daPagina(e) ? trocarPara(url == null ? null : String(url)) : { erro: 'negado' }));
   ipcMain.handle('limb:entrarPorConvite', async (e, texto) => {
     if (!daPagina(e)) return { erro: 'negado' };
@@ -376,24 +376,8 @@ function mostrarJanela() {
 }
 
 // ── Bandeja (perto do relógio): só existe hospedando para amigos ────────────────────────────
-// Ícone desenhado aqui (o mesmo galho do logotipo): o projeto não tem arquivo de imagem para empacotar.
-function iconeBandeja() {
-  const t = 32, s = t / 24, px = Buffer.alloc(t * t * 4);
-  const tracos = [[8, 4, 8, 20], [8, 14.5, 16.5, 7.5], [16.5, 7.5, 14.5, 4], [16.5, 7.5, 20, 8]].map((l) => l.map((v) => v * s));
-  const distSeg = (x, y, [ax, ay, bx, by]) => {
-    const dx = bx - ax, dy = by - ay, k = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)));
-    return Math.hypot(x - ax - k * dx, y - ay - k * dy);
-  };
-  const raio = 8;
-  for (let y = 0; y < t; y++) for (let x = 0; x < t; x++) {
-    const cx = x + 0.5, cy = y + 0.5;
-    const qx = Math.min(Math.max(cx, raio), t - raio), qy = Math.min(Math.max(cy, raio), t - raio);
-    if ((cx - qx) ** 2 + (cy - qy) ** 2 > raio * raio) continue; // fora do quadrado arredondado: transparente
-    const escuro = tracos.some((l) => distSeg(cx, cy, l) < 1.5 * s);
-    px.set(escuro ? [0x05, 0x1b, 0x1d, 255] : [0x58, 0xe5, 0xf2, 255], (y * t + x) * 4); // BGRA
-  }
-  return nativeImage.createFromBitmap(px, { width: t, height: t, scaleFactor: 2 });
-}
+// O galho do logotipo em PNG 32×32 (scaleFactor 2 = 16 pt na bandeja): o projeto não empacota arquivos de imagem
+const iconeBandeja = () => nativeImage.createFromBuffer(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAqklEQVR42u2XQQ6AIAwEufgK47/8f+IH/ICevJgCS3dbEwMJJ1t2RLDdUoxxHvsVMUtvRAlDIFniJgSSsK2LJMaEQBZ+JhNjAqBv3xJ4Px+CUACgMakAKIQMoAbRy0kDqOWGfgIEIuwWpO0AItTaOQpg9MDJADynPRzAXZQUAFRVZAHosswASPoCL4CsMVH+iifABJgAbn+gaMspc6IyJuHu6Df+8DOXbGndZSiyP1MIuyYAAAAASUVORK5CYII=', 'base64'), { scaleFactor: 2 });
 
 // "Iniciar com o Windows" só faz sentido no app instalado/portátil (no `npm run desktop`, abriria o Electron puro)
 const podeIniciarComWindows = app.isPackaged && process.platform === 'win32';
@@ -534,8 +518,8 @@ async function ehEsteComputador(url) {
 }
 
 // ── Links limb://entrar?servidor=…&convite=… ─────────────────────────────────
-// Chegam no argv (Windows/Linux: ao abrir, ou no 'second-instance' com o app já aberto) ou no 'open-url'
-// (macOS). Só são tratados com as janelas prontas; antes disso, ficam guardados.
+// Chegam no argv (ao abrir, ou no 'second-instance' com o app já aberto). Só são tratados com as janelas
+// prontas; antes disso, ficam guardados.
 const linkDe = (argv) => argv.find((a) => typeof a === 'string' && /^limb:/i.test(a)) ?? null;
 let linkPendente = linkDe(process.argv), prontoParaLinks = false;
 async function tratarLink() {
@@ -570,12 +554,7 @@ ipcMain.handle('conexao:iniciarComWindows', (e, ligado) => {
   return config.iniciarComWindows;
 });
 ipcMain.handle('conexao:tailscale', (e) => (daConexao(e) ? tailscale.status() : null));
-ipcMain.handle('conexao:tailscaleLigar', async (e) => {
-  if (!daConexao(e)) return null;
-  const st = await tailscale.status();
-  if (!st.instalado) { shell.openExternal(tailscale.DOWNLOAD); return { baixando: true }; }
-  return tailscale.ligar(st.estado, (url) => shell.openExternal(url));
-});
+ipcMain.handle('conexao:tailscaleLigar', (e) => (daConexao(e) ? ligarTailscale() : null));
 ipcMain.handle('conexao:abrirCompartilhar', (e) => { if (daConexao(e)) shell.openExternal(tailscale.PAINEL_MAQUINAS); });
 ipcMain.handle('conexao:abrirCloudflare', (e) => { if (daConexao(e)) shell.openExternal('https://dash.cloudflare.com/?to=/:account/calls'); });
 // "Gerar link novo" (e o primeiro link de quem vai hospedar): o código nasce aqui, não na página. Vale na hora no
@@ -591,6 +570,10 @@ ipcMain.handle('conexao:novoConvite', (e) => {
 });
 ipcMain.handle('conexao:copiar', (e, texto) => { if (daConexao(e)) clipboard.writeText(String(texto).slice(0, 2000)); });
 ipcMain.handle('conexao:testar', (e, url) => (daConexao(e) ? testarServidor(url) : { ok: false, erro: 'negado' }));
+ipcMain.handle('conexao:lerConvite', (e, texto) => {
+  const lido = daConexao(e) ? lerConvite(texto) : null;
+  return lido && { ...lido, tailscale: ehTailscale(lido.url) };
+});
 // Publicar pela internet: estado (consultado a cada 3 s) e o botão "Ativar". A porta é a do formulário,
 // que vale depois do "Salvar e reiniciar"; ao abrir, o app confere e corrige de qualquer jeito.
 const portaValida = (p) => Number.isInteger(p) && p >= 1024 && p <= 65535;
@@ -684,7 +667,6 @@ app.on('second-instance', (_e, argv) => {
   const link = linkDe(argv);
   if (link) { linkPendente = link; tratarLink(); }
 });
-app.on('open-url', (e, url) => { e.preventDefault(); linkPendente = url; tratarLink(); }); // macOS
 app.on('window-all-closed', () => { if (!bandeja) app.quit(); });
 // Fechando de vez hospedando pela internet (ou com um "Ativar" da janela Servidor ainda sem salvar): tira do ar
 // antes (se outro programa usar esta porta depois, ele não fica publicado na internet). Espera no máximo os 6 s

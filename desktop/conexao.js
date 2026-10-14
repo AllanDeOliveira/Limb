@@ -47,17 +47,10 @@ $('tsBotao').addEventListener('click', async () => {
 });
 setInterval(atualizarTs, 3000);
 
-// Endereço da rede do Tailscale (100.64.0.0/10), igual a ehTailscale em desktop/convite.js
-function ehTailscale(url) {
-  try {
-    const [a, b] = new URL(url).hostname.split('.').map(Number);
-    return a === 100 && b >= 64 && b <= 127;
-  } catch { return false; }
-}
 // O status do Tailscale fica no passo 1 do "Hospedar". No "Entrar", só aparece para convite 100.x:
 // pelo link da internet o amigo não precisa de Tailscale nenhum.
 function lugarDoTs() {
-  const precisa = modo === 'entrar' && !!lido && ehTailscale(lido.url);
+  const precisa = modo === 'entrar' && !!lido?.tailscale;
   $('entrarTs').hidden = $('entrarAceite').hidden = !precisa;
   const lugar = precisa ? $('tsLugarEntrar') : $('tsLugarHospedar');
   if ($('ts').parentElement !== lugar) lugar.append($('ts'));
@@ -236,47 +229,12 @@ for (const id of ['turnId', 'turnToken']) $(id).addEventListener('input', () => 
 });
 
 // ── Entrar ───────────────────────────────────────────────────────────────────
-// Cópia de lerConvite/lerDeepLink de desktop/convite.js (esta janela não importa módulos): mudou lá, mude aqui.
-// Aceita o link https://host/convite/<código>, um limb://entrar, a mensagem inteira do convite antigo,
-// só a URL, ou só "100.x.x.x:3000".
-const semPontuacaoFinal = (s) => s.replace(/[.,;:!?*_~]+$/, '');
-const decodificar = (s) => { try { return decodeURIComponent(s); } catch { return null; } };
-const codigoValido = (c) => typeof c === 'string' && c.length <= 100 && !/[\u0000-\u001f\u007f]/.test(c);
-function lerDeepLink(texto) {
-  const t = String(texto ?? '').trim();
-  if (t.length > 2000) return null;
-  let u;
-  try { u = new URL(t); } catch { return null; }
-  if (u.protocol !== 'limb:' || u.hostname !== 'entrar' || !['', '/'].includes(u.pathname) || u.username || u.password) return null;
-  const servidor = u.searchParams.get('servidor'), codigo = u.searchParams.get('convite') ?? '';
-  if (!servidor || !codigoValido(codigo)) return null;
-  let s;
-  try { s = new URL(servidor); } catch { return null; }
-  if (!/^https?:$/.test(s.protocol) || s.username || s.password || s.pathname !== '/' || s.search || s.hash) return null;
-  return { url: s.origin, codigo };
-}
-function lerConvite(texto) {
-  const t = String(texto ?? '').slice(0, 2000);
-  const deep = /limb:\/\/\S+/i.exec(t);
-  if (deep) { const d = lerDeepLink(semPontuacaoFinal(deep[0])); if (d) return d; }
-  const urls = (t.match(/https?:\/\/[^\s<>"'()]+/gi) ?? []).map(semPontuacaoFinal);
-  let bruto = urls.find((x) => /^https?:\/\/[^/]+\/convite\/[^/?#]+/i.test(x)) ?? urls[0];
-  if (!bruto) {
-    const tsnet = /\b((?:[a-z0-9-]+\.)+ts\.net)(\/convite\/[^\s<>"'()]+)?/i.exec(t);
-    if (tsnet) bruto = semPontuacaoFinal(`https://${tsnet[1]}${tsnet[2] ?? ''}`);
-    else { const m = /\b(\d{1,3}(?:\.\d{1,3}){3})(?::(\d{2,5}))?\b/.exec(t); if (m) bruto = `http://${m[1]}:${m[2] ?? 3000}`; }
-  }
-  let u;
-  try { u = new URL(bruto); } catch { return null; }
-  let codigo = null;
-  const caminho = /^\/convite\/([^/]+)\/?$/.exec(u.pathname);
-  if (caminho) codigo = decodificar(caminho[1]);
-  if (codigo == null) { const h = /[#&]convite=([^&]+)/.exec(u.hash); if (h) codigo = decodificar(h[1]); }
-  if (codigo == null) codigo = /c[óo]digo[^:\n]*:\s*(\S+)/i.exec(t)?.[1] ?? '';
-  return { url: u.origin, codigo: codigoValido(codigo) ? codigo : '' };
-}
-function lerColado() {
-  lido = lerConvite($('colar').value);
+// Lido no processo principal (desktop/convite.js): esta janela não importa módulos
+async function lerColado() {
+  const texto = $('colar').value;
+  const r = await window.conexao.lerConvite(texto);
+  if ($('colar').value !== texto) return; // mudou enquanto lia: a leitura nova vem a seguir
+  lido = r;
   $('lidoEndereco').textContent = lido?.url ?? '—';
   $('lidoConvite').textContent = lido?.codigo ? ' · com convite' : '';
   $('testar').disabled = !lido;

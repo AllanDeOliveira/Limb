@@ -1,16 +1,18 @@
 // Cliente de voz: gateway de voz (opcodes do Discord) + WebRTC direto entre participantes.
 // Fluxo: op 4 no gateway principal → VOICE_SERVER_UPDATE {token, endpoint} → abre o gateway de voz →
-// HELLO(8) → IDENTIFY(0) → READY(2, traz os servidores STUN/TURN) → SELECT_PROTOCOL(1) → SESSION_DESCRIPTION(4).
+// HELLO(8) → IDENTIFY(0) → READY(2, traz os servidores STUN/TURN).
 // Negociação "perfeita" (padrão do W3C): qualquer lado pode renegociar a qualquer momento — é o que
 // permite ligar e desligar o compartilhamento de tela no meio da chamada. Em colisão, o lado "educado"
 // (maior id) cede.
 
 import { TENTA_OUTRO, outrasEntradas, assinaturaPadrao, deveReabrir, alvoSaida, nomeDispositivo, nivelDe } from './dispositivos.js';
 
-const VOP = { IDENTIFY: 0, SELECT_PROTOCOL: 1, READY: 2, HEARTBEAT: 3, SESSION_DESCRIPTION: 4, SPEAKING: 5,
-  HEARTBEAT_ACK: 6, HELLO: 8, CLIENTS_CONNECT: 11, VIDEO: 12, CLIENT_DISCONNECT: 13, PEER_SIGNAL: 100,
-  STREAM_WATCH: 101 };
+// o servidor (voice.js) importa esta mesma tabela
+export const VOP = { IDENTIFY: 0, READY: 2, HEARTBEAT: 3, SPEAKING: 5, HEARTBEAT_ACK: 6, HELLO: 8, CLIENTS_CONNECT: 11,
+  VIDEO: 12, CLIENT_DISCONNECT: 13, PEER_SIGNAL: 100, STREAM_WATCH: 101 };
 const LIMIAR_FALA = 0.02, SEGURA_FALA_MS = 300;
+// volume (RMS) do que o analisador ouve agora; buf: Float32Array do tamanho do fftSize
+const rmsDe = (an, buf) => { an.getFloatTimeDomainData(buf); return Math.sqrt(buf.reduce((s, x) => s + x * x, 0) / buf.length); };
 
 // Preferências de áudio deste computador (não vão para o servidor)
 const CHAVE_PREFS = 'limb.audio';
@@ -137,7 +139,7 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId, toc
     // trocar de canal: o op 4 do canal novo já move no servidor (um op 4 null antes derrubaria a conexão nova)
     if (v) { const a = v; v = null; limpar(a); }
     avisoQueda = null; clearTimeout(timerQueda);
-    v = { channelId: canal.id, guildId: canal.guild_id, stream, ws: null, ssrc: 0, status: 'conectando…', ice: [],
+    v = { channelId: canal.id, guildId: canal.guild_id, stream, ws: null, status: 'conectando…', ice: [],
       mute: !!semMic, deaf: false, semMic, pares: new Map(), audios: new Map(),
       saida: criarSaida(), // áudio dos outros: cada pessoa → ganho próprio → volume geral → alto-falante
       ganhos: new Map(), // userId → { fonte, ganho }
@@ -251,18 +253,16 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId, toc
     switch (op) {
       case VOP.HELLO:
         v.timers.push(setInterval(() => enviar(VOP.HEARTBEAT, { t: Date.now() }), d.heartbeat_interval));
-        enviar(VOP.IDENTIFY, { server_id: vsu.guild_id, user_id: store.me.id, session_id: sessionId(), token: vsu.token });
+        enviar(VOP.IDENTIFY, { user_id: store.me.id, session_id: sessionId(), token: vsu.token });
         break;
       case VOP.READY:
-        v.ssrc = d.ssrc;
         v.ice = Array.isArray(d.ice_servers) ? d.ice_servers : [];
         v.assistindoEnviado = null; // sessão de voz nova: o servidor não sabe de nada ainda
-        enviar(VOP.SELECT_PROTOCOL, { protocol: 'webrtc-p2p', data: null });
-        sincronizarAssistir();
-        break;
-      case VOP.SESSION_DESCRIPTION:
         if (v.status !== 'conectado') tocar('entrar');
-        v.status = 'conectado'; avisar(); break;
+        v.status = 'conectado';
+        sincronizarAssistir();
+        avisar();
+        break;
       case VOP.CLIENTS_CONNECT: for (const id of d.user_ids) if (id !== store.me.id) par(id); sincronizarAssistir(); break;
       case VOP.CLIENT_DISCONNECT: fecharPar(d.user_id); break;
       case VOP.SPEAKING:
@@ -457,7 +457,7 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId, toc
   // compara com o último op 101 mandado; roda no render e quando a voz ou um stream fica pronto, então
   // pedir para assistir antes da conexão de voz terminar também chega ao servidor.
   function sincronizarAssistir() {
-    if (!v?.ssrc || v.ws?.readyState !== 1) return; // antes do READY o servidor não aceita nada
+    if (v?.status !== 'conectado' || v.ws?.readyState !== 1) return; // antes do READY o servidor não aceita nada
     const quem = store.assistindo;
     const alvo = quem && quem !== store.me?.id && v.telasIds.has(quem) ? quem : null; // a minha prévia não usa a rede
     if (alvo === v.assistindoEnviado) return;
@@ -516,8 +516,7 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId, toc
     const amostra = new Float32Array(an.fftSize);
     let falando = false, ultimaVoz = 0;
     v.timers.push(setInterval(() => {
-      an.getFloatTimeDomainData(amostra);
-      const rms = Math.sqrt(amostra.reduce((s, x) => s + x * x, 0) / amostra.length);
+      const rms = rmsDe(an, amostra);
       if (rms > LIMIAR_FALA && !v.mute) ultimaVoz = Date.now();
       // setOnSpeakingWhileMutedCallback: falando com o microfone desligado → aviso no painel
       const mudoFalando = v.mute && !v.deaf && rms > LIMIAR_FALA;
@@ -527,7 +526,7 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId, toc
       const agora = Date.now() - ultimaVoz < SEGURA_FALA_MS;
       if (agora === falando) return;
       falando = agora;
-      enviar(VOP.SPEAKING, { speaking: falando ? 1 : 0, delay: 0, ssrc: v.ssrc });
+      enviar(VOP.SPEAKING, { speaking: falando ? 1 : 0 });
       falando ? store.speaking.add(store.me.id) : store.speaking.delete(store.me.id);
       avisar();
     }, 100));
@@ -690,8 +689,7 @@ export function criarClienteVoz({ store, dispatch, enviarGateway, sessionId, toc
       if (v || temp?.stream?.getAudioTracks()[0]?.readyState === 'ended') { if (temp) fecharTemp(); } // na chamada usa o dela
       else if (!temp && !abrindo) abrirTemp();
       const an = v ? v.analisador : temp?.an;
-      let rms = 0;
-      if (an) { an.getFloatTimeDomainData(amostra); rms = Math.sqrt(amostra.reduce((s, x) => s + x * x, 0) / amostra.length); }
+      const rms = an ? rmsDe(an, amostra) : 0;
       pico = Math.max(nivelDe(rms), pico * 0.8); // sobe na hora, desce devagar
       const f = v ? v.stream.getAudioTracks()[0] : temp?.stream?.getAudioTracks()[0];
       aoNivel({ nivel: pico, fala: rms > LIMIAR_FALA, microfone: f?.readyState === 'live' ? nomeDispositivo(f.label) || 'Microfone' : null,

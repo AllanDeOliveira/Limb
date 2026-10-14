@@ -1,6 +1,5 @@
 // Lógica pura do convite e do Funnel (sem electron): dá para testar com `node --test` (desktop-convite.test.js).
-// lerConvite tem uma cópia em conexao.js (lerColado), que é script comum da janela e não importa módulos:
-// mudou uma, mude a outra.
+// A janela "Servidor" (conexao.js) usa este mesmo lerConvite pelo IPC conexao:lerConvite.
 import { randomInt } from 'node:crypto';
 
 // Ninguém digita o código (ele vai dentro do link): 12 caracteres, ~59 bits. Sem 0/o, 1/l/i mesmo assim: se

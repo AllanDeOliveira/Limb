@@ -258,14 +258,13 @@ No app desktop, as mesmas opções ficam em `%APPDATA%\Limb\settings.json` (`por
 
 | Parte | Arquivo |
 |---|---|
-| API REST e Gateway (WebSocket com opcodes no estilo do Discord, RESUME, ETF ou JSON) | [server.js](server.js) |
+| API REST e Gateway (WebSocket com opcodes no estilo do Discord, RESUME, JSON) | [server.js](server.js) |
 | Gateway de voz, sinalização WebRTC e quem assiste cada tela (op 101) | [voice.js](voice.js) |
 | Snowflakes e busca | [lib.js](lib.js) |
 | Interface (stores no estilo Flux, sem framework) | [public/app.js](public/app.js) |
 | Voz e compartilhamento de tela no cliente | [public/voz.js](public/voz.js) |
 | Troca automática de microfone e saída | [public/dispositivos.js](public/dispositivos.js) |
 | Sons da chamada (WebAudio) | [public/sons.js](public/sons.js) |
-| Codificador ETF (compatível com o [erlpack](https://github.com/discord/erlpack)) | [public/etf.js](public/etf.js) |
 | Página do link de convite (`/convite/<código>`) | [public/convite.html](public/convite.html), [public/convite.js](public/convite.js) |
 | App desktop (Electron), Tailscale, Funnel, links `limb://` e atualização automática | [desktop/](desktop/) |
 
